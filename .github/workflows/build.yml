@@ -7,25 +7,31 @@ on:
         description: Homebridge version
         required: false
         default: latest
+
       config_ui_version:
-        description: Config UI X version
+        description: Homebridge Config UI X version
         required: false
         default: latest
 
   schedule:
     - cron: "0 3 * * 0"
 
+
 permissions:
   contents: write
 
+
 env:
-  IMAGE_NAME: homebridge-uxc-builder
   BUNDLE_NAME: homebridge-arm64.tar.gz
+
 
 jobs:
   build:
-    name: Build native ARM64 UXC bundle
+
+    name: Native ARM64 Homebridge UXC Build
+
     runs-on: ubuntu-24.04-arm
+
 
     steps:
 
@@ -33,37 +39,76 @@ jobs:
         uses: actions/checkout@v4
 
 
-      - name: Setup build variables
+      - name: Setup ARM64 build environment
         run: |
-          echo "HB_VERSION=${{ github.event.inputs.homebridge_version || 'latest' }}" >> $GITHUB_ENV
-          echo "UI_VERSION=${{ github.event.inputs.config_ui_version || 'latest' }}" >> $GITHUB_ENV
+          sudo apt update
+          sudo apt install -y \
+            curl \
+            tar \
+            gzip \
+            jq \
+            rsync
 
 
-      - name: Build ARM64 image
-        run: |
-          docker build \
-            --platform linux/arm64 \
-            --build-arg HOMEBRIDGE_VERSION="$HB_VERSION" \
-            --build-arg CONFIG_UI_VERSION="$UI_VERSION" \
-            -t "$IMAGE_NAME" .
-
-
-      - name: Create temporary container
-        run: |
-          docker create \
-            --name hb-export \
-            "$IMAGE_NAME"
-
-
-      - name: Export root filesystem
+      - name: Create root filesystem
         run: |
           mkdir -p bundle/rootfs
 
-          docker export hb-export \
-            | tar -x -C bundle/rootfs
+
+      - name: Install Node.js ARM64
+        working-directory: bundle/rootfs
+        run: |
+          curl -fsSL https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-arm64.tar.xz \
+          -o node.tar.xz
+
+          tar -xf node.tar.xz
+
+          mv node-v24.18.0-linux-arm64/usr/local/* usr/
+
+          rm -rf node.tar.xz node-v24.18.0-linux-arm64
 
 
-      - name: Copy OCI config
+      - name: Create filesystem structure
+        run: |
+          mkdir -p \
+            bundle/rootfs/etc \
+            bundle/rootfs/homebridge \
+            bundle/rootfs/root \
+            bundle/rootfs/tmp \
+            bundle/rootfs/var/lib/homebridge
+
+
+      - name: Install Homebridge packages
+        working-directory: bundle/rootfs
+        run: |
+          export PATH=$PWD/usr/bin:$PWD/usr/local/bin:$PATH
+
+          npm install -g \
+            --prefix /usr/local \
+            homebridge@${{ github.event.inputs.homebridge_version || 'latest' }}
+
+          npm install -g \
+            --prefix /usr/local \
+            homebridge-config-ui-x@${{ github.event.inputs.config_ui_version || 'latest' }}
+
+
+      - name: Create Homebridge init
+        run: |
+          cat > bundle/rootfs/init <<'EOF'
+#!/bin/sh
+
+export HOME=/root
+export PATH=/usr/local/bin:/usr/bin:/bin
+
+mkdir -p /homebridge
+
+exec hb-service run
+EOF
+
+          chmod +x bundle/rootfs/init
+
+
+      - name: Copy OCI configuration
         run: |
           cp config.json bundle/config.json
 
@@ -71,9 +116,11 @@ jobs:
       - name: Validate bundle
         run: |
           test -f bundle/config.json
-          test -d bundle/rootfs
+          test -x bundle/rootfs/init
 
-          echo "Bundle OK"
+          jq empty bundle/config.json
+
+          echo "UXC bundle validation successful"
 
 
       - name: Package UXC bundle
@@ -81,31 +128,11 @@ jobs:
           tar -czf "$BUNDLE_NAME" bundle
 
 
-      - name: Delete old release
-        continue-on-error: true
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const releases = await github.rest.repos.listReleases({
-              owner: context.repo.owner,
-              repo: context.repo.repo
-            });
-
-            for (const release of releases.data) {
-              if (release.tag_name === "latest") {
-                await github.rest.repos.deleteRelease({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  release_id: release.id
-                });
-              }
-            }
-
-
-      - name: Create GitHub release
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: Homebridge UXC ARM64 Latest
+          overwrite_files: true
           files: |
             ${{ env.BUNDLE_NAME }}
