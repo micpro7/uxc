@@ -1,3 +1,4 @@
+```yaml
 name: Build Homebridge UXC ARM64 Bundle
 
 on:
@@ -7,132 +8,175 @@ on:
         description: Homebridge version
         required: false
         default: latest
-
       config_ui_version:
-        description: Homebridge Config UI X version
+        description: Config UI X version
         required: false
         default: latest
 
   schedule:
     - cron: "0 3 * * 0"
 
-
 permissions:
   contents: write
 
-
-env:
-  BUNDLE_NAME: homebridge-arm64.tar.gz
-
-
 jobs:
   build:
-
-    name: Native ARM64 Homebridge UXC Build
-
+    name: Build ARM64 UXC Bundle
     runs-on: ubuntu-24.04-arm
 
+    env:
+      BUNDLE_NAME: homebridge-arm64.tar.gz
+      HB_VERSION: ${{ github.event.inputs.homebridge_version || 'latest' }}
+      UI_VERSION: ${{ github.event.inputs.config_ui_version || 'latest' }}
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
-
-      - name: Setup ARM64 build environment
+      - name: Install dependencies
         run: |
           sudo apt update
           sudo apt install -y \
             curl \
+            wget \
+            jq \
             tar \
             gzip \
-            jq \
-            rsync
+            rsync \
+            nodejs \
+            npm
 
-
-      - name: Create root filesystem
+      - name: Create bundle directories
         run: |
           mkdir -p bundle/rootfs
+          mkdir -p bundle/rootfs/homebridge
 
-
-      - name: Install Node.js ARM64
-        working-directory: bundle/rootfs
+      - name: Download Alpine ARM64 rootfs
         run: |
-          curl -fsSL https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-arm64.tar.xz \
-          -o node.tar.xz
+          wget -q \
+            https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/alpine-minirootfs-latest-aarch64.tar.gz \
+            -O alpine.tar.gz
 
-          tar -xf node.tar.xz
+          tar -xzf alpine.tar.gz -C bundle/rootfs
 
-          mv node-v24.18.0-linux-arm64/usr/local/* usr/
-
-          rm -rf node.tar.xz node-v24.18.0-linux-arm64
-
-
-      - name: Create filesystem structure
+      - name: Install Homebridge into rootfs
         run: |
-          mkdir -p \
-            bundle/rootfs/etc \
-            bundle/rootfs/homebridge \
-            bundle/rootfs/root \
-            bundle/rootfs/tmp \
-            bundle/rootfs/var/lib/homebridge
+          sudo chroot bundle/rootfs /bin/sh -c "
+            apk update &&
+            apk add \
+              nodejs \
+              npm \
+              tini \
+              ca-certificates \
+              avahi \
+              dbus \
+              bash
+          "
 
+          sudo chroot bundle/rootfs /bin/sh -c "
+            npm install -g \
+              homebridge@${HB_VERSION} \
+              homebridge-config-ui-x@${UI_VERSION}
+          "
 
-      - name: Install Homebridge packages
-        working-directory: bundle/rootfs
-        run: |
-          export PATH=$PWD/usr/bin:$PWD/usr/local/bin:$PATH
-
-          npm install -g \
-            --prefix /usr/local \
-            homebridge@${{ github.event.inputs.homebridge_version || 'latest' }}
-
-          npm install -g \
-            --prefix /usr/local \
-            homebridge-config-ui-x@${{ github.event.inputs.config_ui_version || 'latest' }}
-
-
-      - name: Create Homebridge init
+      - name: Create init script
         run: |
           cat > bundle/rootfs/init <<'EOF'
-#!/bin/sh
+          #!/bin/sh
 
-export HOME=/root
-export PATH=/usr/local/bin:/usr/bin:/bin
+          mkdir -p /homebridge
 
-mkdir -p /homebridge
-
-exec hb-service run
-EOF
+          exec /sbin/tini -- \
+            homebridge \
+            -U /homebridge \
+            -P /usr/local/lib/node_modules
+          EOF
 
           chmod +x bundle/rootfs/init
 
-
-      - name: Copy OCI configuration
+      - name: Create OCI config
         run: |
-          cp config.json bundle/config.json
-
+          cat > bundle/config.json <<'EOF'
+{
+  "ociVersion": "1.0.2",
+  "hostname": "homebridge",
+  "process": {
+    "terminal": true,
+    "cwd": "/homebridge",
+    "args": [
+      "/init"
+    ],
+    "env": [
+      "HOME=/root",
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "NODE_ENV=production",
+      "NODE_OPTIONS=--max-old-space-size=256",
+      "HOMEBRIDGE_CONFIG_UI=1",
+      "HOMEBRIDGE_CONFIG_UI_HOST=0.0.0.0"
+    ],
+    "user": {
+      "uid": 0,
+      "gid": 0
+    }
+  },
+  "root": {
+    "path": "rootfs",
+    "readonly": false
+  },
+  "mounts": [
+    {
+      "destination": "/proc",
+      "type": "proc",
+      "source": "proc"
+    },
+    {
+      "destination": "/dev",
+      "type": "tmpfs",
+      "source": "tmpfs"
+    },
+    {
+      "destination": "/sys",
+      "type": "sysfs",
+      "source": "sysfs"
+    }
+  ],
+  "linux": {
+    "namespaces": [
+      {
+        "type": "pid"
+      },
+      {
+        "type": "network"
+      },
+      {
+        "type": "ipc"
+      },
+      {
+        "type": "uts"
+      },
+      {
+        "type": "mount"
+      }
+    ]
+  }
+}
+EOF
 
       - name: Validate bundle
         run: |
           test -f bundle/config.json
-          test -x bundle/rootfs/init
+          test -f bundle/rootfs/init
+          test -d bundle/rootfs/usr/local/lib/node_modules/homebridge
 
-          jq empty bundle/config.json
-
-          echo "UXC bundle validation successful"
-
-
-      - name: Package UXC bundle
+      - name: Package bundle
         run: |
           tar -czf "$BUNDLE_NAME" bundle
 
-
-      - name: Create release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: Homebridge UXC ARM64 Latest
-          overwrite_files: true
           files: |
-            ${{ env.BUNDLE_NAME }}
+            homebridge-arm64.tar.gz
+```
