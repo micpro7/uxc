@@ -4,9 +4,29 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'bundle/config.template.json'
+      - 'config.template.json'
       - '.github/workflows/build.yml'
   workflow_dispatch:
+    inputs:
+      alpine_version:
+        description: 'Alpine version'
+        default: '3.22.2'
+        type: string
+      homebridge_version:
+        description: 'Homebridge version'
+        default: 'latest'
+        type: string
+      config_ui_version:
+        description: 'Config UI X version'
+        default: 'latest'
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: homebridge-uxc
+  cancel-in-progress: true
 
 jobs:
   build-release:
@@ -16,23 +36,38 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Generate Reproducible Release Tag
-        id: vars
+      - name: Resolve Environment Versions
+        id: versions
+        shell: bash
         run: |
           set -euo pipefail
+          
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ALPINE_VER=${{ github.event.inputs.alpine_version }}" >> $GITHUB_ENV
+            echo "HB_VER=${{ github.event.inputs.homebridge_version }}" >> $GITHUB_ENV
+            echo "UI_VER=${{ github.event.inputs.config_ui_version }}" >> $GITHUB_ENV
+          else
+            echo "ALPINE_VER=3.22.2" >> $GITHUB_ENV
+            echo "HB_VER=latest" >> $GITHUB_ENV
+            echo "UI_VER=latest" >> $GITHUB_ENV
+          fi
+          
           echo "VERSION=$(date +'%Y.%m.%d')-${GITHUB_RUN_NUMBER}" >> $GITHUB_ENV
 
-      - name: Fetch Alpine 3.22 Minirootfs
+      - name: Fetch Alpine Minirootfs
         run: |
           set -euo pipefail
           mkdir -p bundle/rootfs
           
-          # Pinned for strict reproducibility
-          ALPINE_VERSION="3.22.2"
-          echo "Downloading Alpine Linux v${ALPINE_VERSION}..."
+          echo "Requested Alpine Linux v${ALPINE_VER}..."
+          ALPINE_MAJOR_MINOR=$(echo "${ALPINE_VER}" | cut -d. -f1,2)
           
-          wget -qO alpine.tar.gz "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/aarch64/alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz"
+          wget -qO alpine.tar.gz "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_MAJOR_MINOR}/releases/aarch64/alpine-minirootfs-${ALPINE_VER}-aarch64.tar.gz"
+          
+          test -s alpine.tar.gz || { echo "❌ Failed to download Alpine minirootfs!"; exit 1; }
           
           echo "Extracting payload with strict permissions..."
           sudo tar --same-owner --same-permissions -xf alpine.tar.gz -C bundle/rootfs
@@ -43,7 +78,6 @@ jobs:
           set -euo pipefail
           sudo cp /etc/resolv.conf bundle/rootfs/etc/resolv.conf
           
-          # Mount kernel pseudo-filesystems required by apk and npm
           sudo mount --bind /dev bundle/rootfs/dev
           sudo mount --bind /dev/pts bundle/rootfs/dev/pts
           sudo mount -t proc proc bundle/rootfs/proc
@@ -55,7 +89,6 @@ jobs:
           sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
             apk update
-            apk upgrade --no-cache
             apk add --no-cache \
               nodejs \
               npm \
@@ -64,12 +97,14 @@ jobs:
               jq \
               tzdata \
               ca-certificates \
-              bash
+              bash \
+              file
           "
 
       - name: Install Homebridge Core & UI
         run: |
           set -euo pipefail
+          echo "Installing homebridge@${HB_VER} and homebridge-config-ui-x@${UI_VER}..."
           sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
             npm install -g \
@@ -78,8 +113,23 @@ jobs:
               --omit=optional \
               --no-audit \
               --no-fund \
-              homebridge@latest \
-              homebridge-config-ui-x@latest
+              homebridge@${HB_VER} \
+              homebridge-config-ui-x@${UI_VER}
+          "
+
+      - name: Verify ARM64 Runtime Binaries
+        run: |
+          set -euo pipefail
+          sudo chroot bundle/rootfs /bin/sh -c "
+            set -eu
+            echo '--- Architecture Check ---'
+            uname -m
+            
+            echo '--- Node Binary Check ---'
+            file \$(which node)
+            
+            echo '--- Homebridge Binary Check ---'
+            file \$(which homebridge)
           "
 
       - name: Initialize OCI Runtime Directories & Timezone
@@ -98,11 +148,10 @@ jobs:
           sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
             echo '--- Running Health Checks ---'
-            which node && node -v
-            which npm && npm -v
-            which homebridge && homebridge --version
+            node -v
+            npm -v
+            homebridge --version
             
-            # Tolerant checks for Config UI X service
             which hb-service || true
             hb-service --version || true
             
@@ -116,11 +165,29 @@ jobs:
             find /var/tmp -mindepth 1 -delete
           "
 
+      - name: Generate Build Summary Report
+        run: |
+          set -euo pipefail
+          NODE_VER=$(sudo chroot bundle/rootfs /bin/sh -c 'node -v')
+          NPM_VER=$(sudo chroot bundle/rootfs /bin/sh -c 'npm -v')
+          HB_VERSION=$(sudo chroot bundle/rootfs /bin/sh -c 'homebridge --version')
+          
+          {
+            echo "### 🚀 Homebridge UXC Build Manifest"
+            echo "| Component | Version / Target |"
+            echo "| :--- | :--- |"
+            echo "| **OS Base** | Alpine Linux ${ALPINE_VER} (ARM64) |"
+            echo "| **Node.js** | ${NODE_VER} |"
+            echo "| **npm** | v${NPM_VER} |"
+            echo "| **Homebridge** | v${HB_VERSION} (Target: ${HB_VER}) |"
+            echo "| **Config UI X** | Target: ${UI_VER} |"
+            echo "| **Build ID** | ${VERSION} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Cleanup Host Mounts & Verify
         if: always()
         run: |
           set -euo pipefail
-          # Safely unmount in reverse order
           sudo umount bundle/rootfs/dev/pts || true
           sudo umount bundle/rootfs/dev || true
           sudo umount bundle/rootfs/proc || true
@@ -141,7 +208,19 @@ jobs:
             --numeric-owner \
             --owner=0 \
             --group=0 \
+            --pax-option=delete=atime,delete=ctime \
             -czf ../homebridge-arm64.tar.gz .
+
+      - name: Validate Bundle Archive
+        run: |
+          set -euo pipefail
+          
+          test -s homebridge-arm64.tar.gz
+          
+          tar -tzf homebridge-arm64.tar.gz | grep -q "rootfs"
+          tar -tzf homebridge-arm64.tar.gz | grep -q "config.template.json"
+          
+          echo "✅ Bundle archive validated successfully."
 
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
@@ -151,9 +230,9 @@ jobs:
           body: |
             ### 🚀 Automated Native ARM64 Build
             Deterministic, immutable UXC bundle for OpenWrt.
-            - **OS:** Alpine Linux 3.22 (aarch64)
+            - **OS:** Alpine Linux ${{ env.ALPINE_VER }} (aarch64)
             - **Core:** Node.js, npm, Tini, bash
-            - **App:** `homebridge@latest`, `homebridge-config-ui-x@latest`
+            - **App:** `homebridge@${{ env.HB_VER }}`, `homebridge-config-ui-x@${{ env.UI_VER }}`
           files: homebridge-arm64.tar.gz
           prerelease: false
           make_latest: true
