@@ -32,7 +32,7 @@ PERSISTENT_DATA_SOURCE="$TARGET_MOUNT/UXC/$CONTAINER_NAME/data"
 # ==============================================================================
 TIMEZONE="Europe/London"                   # Local system timezone
 MDNS_NET_INTERFACE="br-lan"                # Interface for Homebridge mDNS broadcasts
-NODE_MEMORY_LIMIT="128"                    # Max Node.js heap memory limit in MB
+NODE_MEMORY_LIMIT="256"                    # Max Node.js heap memory limit in MB
 THREAD_POOL_SIZE="4"                       # Number of Libuv worker threads
 BIND_IP="0.0.0.0"                          # Binding address for Homebridge UI
 
@@ -215,6 +215,14 @@ jq --arg ip "HOMEBRIDGE_IP=$BIND_IP" \
     "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
 
 echo "   ↳ Network socket interface listening on: $BIND_IP ✅"
+
+
+# Split 6b: Update Web UI Binding Host
+jq --arg ui_host "HOMEBRIDGE_CONFIG_UI_HOST=$BIND_IP" \
+    '.process.env += [$ui_host]' \
+    "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
+
+echo "   ↳ Web UI socket host forced to: $BIND_IP ✅"
 
 
 # Split 7: Toggle Kernel Security Boundaries
