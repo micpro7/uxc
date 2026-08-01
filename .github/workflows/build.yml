@@ -217,11 +217,10 @@ jobs:
           
           test -s homebridge-arm64.tar.gz
           
-          # Extract listing once into a variable or check safely to avoid SIGPIPE errors
           ARCHIVE_FILES=$(tar -tf homebridge-arm64.tar.gz)
           
-          echo "$ARCHIVE_FILES" | grep -q "rootfs" || { echo "❌ 'rootfs' missing from archive!"; exit 1; }
-          echo "$ARCHIVE_FILES" | grep -q "config.template.json" || { echo "❌ 'config.template.json' missing from archive!"; exit 1; }
+          [[ "$ARCHIVE_FILES" =~ rootfs ]] || { echo "❌ 'rootfs' missing from archive!"; exit 1; }
+          [[ "$ARCHIVE_FILES" =~ config.template.json ]] || { echo "❌ 'config.template.json' missing from archive!"; exit 1; }
           
           echo "✅ Bundle archive validated successfully."
 
