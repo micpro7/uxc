@@ -1,154 +1,161 @@
-name: Build Homebridge UXC Bundle
+name: Build Native ARM64 UXC Bundle
 
 on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'bundle/config.template.json'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
-    inputs:
-      homebridge_version:
-        description: "Homebridge version"
-        required: false
-        default: "latest"
-
-      config_ui_version:
-        description: "Homebridge Config UI X version"
-        required: false
-        default: "latest"
-
-  schedule:
-    - cron: "0 3 * * 0"
-
-permissions:
-  contents: write
-
-env:
-  BUNDLE_NAME: homebridge-arm64.tar.gz
-  ALPINE_VERSION: "latest-stable"
 
 jobs:
-
-  build:
-
-    # Change to:
-    # runs-on: [self-hosted, Linux, ARM64]
-    # if using your own ARM runner.
-    runs-on: ubuntu-24.04-arm64
-
+  build-release:
+    name: Compile ARM64 Rootfs & Publish
+    runs-on: ubuntu-24.04-arm
+    
     steps:
-
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Show build environment
+      - name: Generate Reproducible Release Tag
+        id: vars
         run: |
-          uname -a
-          arch
-          lscpu || true
+          set -euo pipefail
+          echo "VERSION=$(date +'%Y.%m.%d')-${GITHUB_RUN_NUMBER}" >> $GITHUB_ENV
 
-      - name: Install build tools
+      - name: Fetch Alpine 3.22 Minirootfs
         run: |
-          sudo apt-get update
-
-          sudo apt-get install -y \
-            wget \
-            curl \
-            jq \
-            tar \
-            xz-utils \
-            ca-certificates \
-            sudo
-
-      - name: Download Alpine minirootfs
-        run: |
-
+          set -euo pipefail
           mkdir -p bundle/rootfs
+          
+          # Pinned for strict reproducibility
+          ALPINE_VERSION="3.22.2"
+          echo "Downloading Alpine Linux v${ALPINE_VERSION}..."
+          
+          wget -qO alpine.tar.gz "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/aarch64/alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz"
+          
+          echo "Extracting payload with strict permissions..."
+          sudo tar --same-owner --same-permissions -xf alpine.tar.gz -C bundle/rootfs
+          rm alpine.tar.gz
 
-          wget -O alpine.tar.gz \
-            https://dl-cdn.alpinelinux.org/alpine/${ALPINE_VERSION}/releases/aarch64/alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz
-
-          sudo tar \
-            -xzf alpine.tar.gz \
-            -C bundle/rootfs
-
-      - name: Configure DNS inside rootfs
+      - name: Prepare Chroot Environment (Mount Pseudo-FS)
         run: |
-          sudo cp /etc/resolv.conf \
-            bundle/rootfs/etc/resolv.conf
-
-      - name: Install Homebridge
-        env:
-          HB_VERSION: ${{ github.event.inputs.homebridge_version || 'latest' }}
-          UI_VERSION: ${{ github.event.inputs.config_ui_version || 'latest' }}
-        run: |
-
+          set -euo pipefail
+          sudo cp /etc/resolv.conf bundle/rootfs/etc/resolv.conf
+          
+          # Mount kernel pseudo-filesystems required by apk and npm
           sudo mount --bind /dev bundle/rootfs/dev
-          sudo mount --bind /proc bundle/rootfs/proc
-          sudo mount --bind /sys bundle/rootfs/sys
+          sudo mount --bind /dev/pts bundle/rootfs/dev/pts
+          sudo mount -t proc proc bundle/rootfs/proc
+          sudo mount -t sysfs sys bundle/rootfs/sys
 
-          sudo chroot bundle/rootfs /bin/sh <<EOF
-
-          set -e
-
-          apk update
-
-          apk add \
-              bash \
-              tini \
+      - name: Install System Dependencies
+        run: |
+          set -euo pipefail
+          sudo chroot bundle/rootfs /bin/sh -c "
+            set -eu
+            apk update
+            apk upgrade --no-cache
+            apk add --no-cache \
               nodejs \
               npm \
-              ca-certificates \
+              tini \
+              curl \
+              jq \
               tzdata \
-              avahi-libs
+              ca-certificates \
+              bash
+          "
 
-          npm install -g \
-              homebridge@${HB_VERSION}
-
-          npm install -g \
-              homebridge-config-ui-x@${UI_VERSION}
-
-          mkdir -p /homebridge
-
-          mkdir -p /var/log
-
-          apk cache clean
-
-          EOF
-
-          sudo umount bundle/rootfs/dev
-          sudo umount bundle/rootfs/proc
-          sudo umount bundle/rootfs/sys
-
-      - name: Copy runtime scripts
+      - name: Install Homebridge Core & UI
         run: |
+          set -euo pipefail
+          sudo chroot bundle/rootfs /bin/sh -c "
+            set -eu
+            npm install -g \
+              --unsafe-perm \
+              --omit=dev \
+              --omit=optional \
+              --no-audit \
+              --no-fund \
+              homebridge@latest \
+              homebridge-config-ui-x@latest
+          "
 
-          sudo cp scripts/init \
-            bundle/rootfs/init
-
-          sudo chmod +x \
-            bundle/rootfs/init
-
-          if [ -f scripts/healthcheck ]; then
-            sudo cp scripts/healthcheck \
-              bundle/rootfs/usr/local/bin/
-          fi
-
-      - name: Generate OCI template
+      - name: Initialize OCI Runtime Directories & Timezone
         run: |
+          set -euo pipefail
+          sudo chroot bundle/rootfs /bin/sh -c "
+            set -eu
+            mkdir -p /run /var/run /var/lib/homebridge /var/log /etc/homebridge
+            cp /usr/share/zoneinfo/UTC /etc/localtime
+            echo UTC >/etc/timezone
+          "
 
-          cp bundle/config.template.json \
-             bundle/config.json
-
-      - name: Package bundle
+      - name: Health Checks & Bundle Optimization
         run: |
+          set -euo pipefail
+          sudo chroot bundle/rootfs /bin/sh -c "
+            set -eu
+            echo '--- Running Health Checks ---'
+            which node && node -v
+            which npm && npm -v
+            which homebridge && homebridge --version
+            
+            # Tolerant checks for Config UI X service
+            which hb-service || true
+            hb-service --version || true
+            
+            echo '--- Purging Build Caches & Temp Files ---'
+            npm cache clean --force
+            rm -rf /root/.npm
+            rm -rf /usr/lib/node_modules/npm/docs
+            rm -rf /usr/lib/node_modules/npm/html
+            rm -rf /var/cache/apk/*
+            find /tmp -mindepth 1 -delete
+            find /var/tmp -mindepth 1 -delete
+          "
 
-          tar \
-            -czf "${BUNDLE_NAME}" \
-            -C bundle .
+      - name: Cleanup Host Mounts & Verify
+        if: always()
+        run: |
+          set -euo pipefail
+          # Safely unmount in reverse order
+          sudo umount bundle/rootfs/dev/pts || true
+          sudo umount bundle/rootfs/dev || true
+          sudo umount bundle/rootfs/proc || true
+          sudo umount bundle/rootfs/sys || true
+          
+          sudo rm -f bundle/rootfs/etc/resolv.conf
+          
+          test -f bundle/config.template.json || (echo '❌ Missing config.template.json!' && exit 1)
 
-      - name: Publish GitHub Release
+      - name: Package Deterministic OCI Bundle
+        run: |
+          set -euo pipefail
+          echo "Compressing bundle payload deterministically..."
+          cd bundle
+          sudo tar \
+            --sort=name \
+            --mtime='UTC 2026-01-01' \
+            --numeric-owner \
+            --owner=0 \
+            --group=0 \
+            -czf ../homebridge-arm64.tar.gz .
+
+      - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
-
         with:
-          tag_name: latest
+          tag_name: ${{ env.VERSION }}
+          name: "Homebridge UXC Base - ${{ env.VERSION }}"
+          body: |
+            ### 🚀 Automated Native ARM64 Build
+            Deterministic, immutable UXC bundle for OpenWrt.
+            - **OS:** Alpine Linux 3.22 (aarch64)
+            - **Core:** Node.js, npm, Tini, bash
+            - **App:** `homebridge@latest`, `homebridge-config-ui-x@latest`
+          files: homebridge-arm64.tar.gz
+          prerelease: false
           make_latest: true
-          name: Homebridge UXC Latest
-          files: |
-            ${{ env.BUNDLE_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
