@@ -20,7 +20,7 @@ BUNDLE_URL="https://github.com/micpro7/uxc/releases/latest/download/homebridge-a
 # CONFIGURATION VARIABLES (Edit these to tune your deployment)
 # ==============================================================================
 CONTAINER_NAME="homebridge"
-TARGET_MOUNT="/mnt/SSD"                     # Physical host SSD mount point
+TARGET_MOUNT="/mnt/X6"                     # Physical host SSD mount point
 
 # Derived Variables: Moving TARGET_MOUNT moves the entire installation setup
 ARCHIVE="$TARGET_MOUNT/homebridge.tar.gz"
