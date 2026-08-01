@@ -197,6 +197,12 @@ jobs:
           
           test -f bundle/config.template.json || (echo '❌ Missing config.template.json!' && exit 1)
 
+      - name: Stage Production OCI Config
+        run: |
+          set -euo pipefail
+          echo "Copying config.template.json -> config.json..."
+          cp bundle/config.template.json bundle/config.json
+
       - name: Package Deterministic OCI Bundle
         run: |
           set -euo pipefail
@@ -209,7 +215,7 @@ jobs:
             --owner=0 \
             --group=0 \
             --pax-option=delete=atime,delete=ctime \
-            -czf ../homebridge-arm64.tar.gz .
+            -czf ../homebridge-arm64.tar.gz config.json rootfs
             
       - name: Validate Bundle Archive
         run: |
@@ -220,7 +226,7 @@ jobs:
           ARCHIVE_FILES=$(tar -tf homebridge-arm64.tar.gz)
           
           [[ "$ARCHIVE_FILES" =~ rootfs ]] || { echo "❌ 'rootfs' missing from archive!"; exit 1; }
-          [[ "$ARCHIVE_FILES" =~ config.template.json ]] || { echo "❌ 'config.template.json' missing from archive!"; exit 1; }
+          [[ "$ARCHIVE_FILES" =~ config.json ]] || { echo "❌ 'config.json' missing from archive!"; exit 1; }
           
           echo "✅ Bundle archive validated successfully."
 
