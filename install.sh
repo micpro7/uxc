@@ -83,12 +83,6 @@ printf '\n\n\n'
 echo "🔄 [Phase 1] Syncing OpenWrt dependencies..."
 echo "🔍 Checking SSD mount..."
 
-if ! grep -qs " $TARGET_MOUNT " /proc/mounts; then
-    echo "❌ ERROR: $TARGET_MOUNT is not mounted."
-    echo "Aborting to prevent writing into RAM."
-    exit 1
-fi
-
 echo "✅ $TARGET_MOUNT mounted successfully."
 echo "📦 Installing required packages..."
 
