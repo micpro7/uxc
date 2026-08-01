@@ -19,7 +19,7 @@ printf '\n\n\n'
 # ==============================================================================
 
 # GITHUB DOWNLOAD CONFIGURATION
-BUNDLE_URL="https://github.com/micpro7/openwrt-uxc-homebridge/releases/latest/download/homebridge-arm64.tar.gz"
+BUNDLE_URL="https://github.com/micpro7/uxc/releases/latest/download/homebridge-arm64.tar.gz"
 
 # INSTALLATION VARIABLES
 CONTAINER_NAME="homebridge"
