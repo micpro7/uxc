@@ -1,4 +1,4 @@
-name: Build Homebridge UXC ARM64 Bundle
+name: Build Homebridge UXC Bundle
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         default: "latest"
 
       config_ui_version:
-        description: "Config UI version"
+        description: "Homebridge Config UI X version"
         required: false
         default: "latest"
 
@@ -19,164 +19,136 @@ on:
 permissions:
   contents: write
 
+env:
+  BUNDLE_NAME: homebridge-arm64.tar.gz
+  ALPINE_VERSION: "latest-stable"
+
 jobs:
+
   build:
+
+    # Change to:
+    # runs-on: [self-hosted, Linux, ARM64]
+    # if using your own ARM runner.
     runs-on: ubuntu-24.04-arm64
 
-    env:
-      BUNDLE_NAME: homebridge-arm64.tar.gz
-
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Show build environment
         run: |
-          sudo apt update
-          sudo apt install -y \
+          uname -a
+          arch
+          lscpu || true
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
             wget \
             curl \
-            tar \
             jq \
-            xz-utils
+            tar \
+            xz-utils \
+            ca-certificates \
+            sudo
 
-      - name: Prepare bundle
+      - name: Download Alpine minirootfs
         run: |
+
           mkdir -p bundle/rootfs
 
-          wget -q \
-            https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/alpine-minirootfs-latest-aarch64.tar.gz \
-            -O alpine.tar.gz
+          wget -O alpine.tar.gz \
+            https://dl-cdn.alpinelinux.org/alpine/${ALPINE_VERSION}/releases/aarch64/alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz
 
-          tar -xzf alpine.tar.gz \
+          sudo tar \
+            -xzf alpine.tar.gz \
             -C bundle/rootfs
 
-          # Copy host DNS settings into rootfs so apk networking works inside chroot
-          sudo cp /etc/resolv.conf bundle/rootfs/etc/resolv.conf
-
-      - name: Install Homebridge inside rootfs
+      - name: Configure DNS inside rootfs
         run: |
-          HB_VER="${{ github.event.inputs.homebridge_version || 'latest' }}"
-          UI_VER="${{ github.event.inputs.config_ui_version || 'latest' }}"
+          sudo cp /etc/resolv.conf \
+            bundle/rootfs/etc/resolv.conf
+
+      - name: Install Homebridge
+        env:
+          HB_VERSION: ${{ github.event.inputs.homebridge_version || 'latest' }}
+          UI_VERSION: ${{ github.event.inputs.config_ui_version || 'latest' }}
+        run: |
+
+          sudo mount --bind /dev bundle/rootfs/dev
+          sudo mount --bind /proc bundle/rootfs/proc
+          sudo mount --bind /sys bundle/rootfs/sys
 
           sudo chroot bundle/rootfs /bin/sh <<EOF
+
+          set -e
+
           apk update
 
           apk add \
-            nodejs \
-            npm \
-            bash \
-            tini \
-            ca-certificates \
-            tzdata \
-            avahi-libs
+              bash \
+              tini \
+              nodejs \
+              npm \
+              ca-certificates \
+              tzdata \
+              avahi-libs
 
           npm install -g \
-            homebridge@${HB_VER} \
-            homebridge-config-ui-x@${UI_VER}
+              homebridge@${HB_VERSION}
+
+          npm install -g \
+              homebridge-config-ui-x@${UI_VERSION}
 
           mkdir -p /homebridge
 
-          cat > /init <<'INIT'
-          #!/bin/sh
+          mkdir -p /var/log
 
-          export HOME=/root
-          export NODE_ENV=production
-
-          exec /sbin/tini -- \
-            homebridge -U /homebridge
-          INIT
-
-          chmod +x /init
+          apk cache clean
 
           EOF
 
-      - name: Create OCI config
+          sudo umount bundle/rootfs/dev
+          sudo umount bundle/rootfs/proc
+          sudo umount bundle/rootfs/sys
+
+      - name: Copy runtime scripts
         run: |
-          cat > bundle/config.json <<'EOF'
-          {
-            "ociVersion": "1.0.2",
-            "hostname": "homebridge",
 
-            "process": {
-              "terminal": true,
-              "cwd": "/homebridge",
+          sudo cp scripts/init \
+            bundle/rootfs/init
 
-              "args": [
-                "/init"
-              ],
+          sudo chmod +x \
+            bundle/rootfs/init
 
-              "env": [
-                "HOME=/root",
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "NODE_ENV=production",
-                "HOMEBRIDGE_CONFIG_UI=1",
-                "HOMEBRIDGE_CONFIG_PATH=/homebridge/config.json",
-                "HOMEBRIDGE_CONFIG_UI_HOST=0.0.0.0"
-              ],
+          if [ -f scripts/healthcheck ]; then
+            sudo cp scripts/healthcheck \
+              bundle/rootfs/usr/local/bin/
+          fi
 
-              "user": {
-                "uid": 0,
-                "gid": 0
-              }
-            },
+      - name: Generate OCI template
+        run: |
 
-            "root": {
-              "path": "rootfs",
-              "readonly": false
-            },
-
-            "mounts": [
-              {
-                "destination": "/proc",
-                "type": "proc",
-                "source": "proc"
-              },
-              {
-                "destination": "/dev",
-                "type": "tmpfs",
-                "source": "tmpfs"
-              },
-              {
-                "destination": "/tmp",
-                "type": "tmpfs",
-                "source": "tmpfs"
-              }
-            ],
-
-            "linux": {
-              "namespaces": [
-                {
-                  "type": "pid"
-                },
-                {
-                  "type": "network"
-                },
-                {
-                  "type": "mount"
-                },
-                {
-                  "type": "uts"
-                },
-                {
-                  "type": "ipc"
-                }
-              ]
-            }
-          }
-          EOF
+          cp bundle/config.template.json \
+             bundle/config.json
 
       - name: Package bundle
         run: |
+
           tar \
-            -czf $BUNDLE_NAME \
+            -czf "${BUNDLE_NAME}" \
             -C bundle .
 
-      - name: Create GitHub Release
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
+
         with:
           tag_name: latest
-          name: Homebridge UXC ARM64 Latest
           make_latest: true
+          name: Homebridge UXC Latest
           files: |
             ${{ env.BUNDLE_NAME }}
