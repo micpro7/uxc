@@ -3,7 +3,7 @@
   "hostname": "homebridge",
   "annotations": {
     "org.opencontainers.image.source": "https://github.com/micpro7/uxc",
-    "io.homebridge.plugin-path": "/homebridge/plugins",
+    "io.homebridge.plugin-path": "/homebridge/lib/node_modules",
     "io.homebridge.storage-path": "/homebridge"
   },
   "process": {
@@ -26,7 +26,9 @@
       "HOME=/homebridge",
       "TERM=xterm",
       "NODE_ENV=production",
-      "npm_config_update_notifier=false"
+      "npm_config_update_notifier=false",
+      "npm_config_prefix=/homebridge",
+      "NODE_PATH=/homebridge/lib/node_modules:/usr/local/lib/node_modules"
     ],
     "cwd": "/homebridge",
     "capabilities": {
