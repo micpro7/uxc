@@ -20,7 +20,7 @@ BUNDLE_URL="https://github.com/micpro7/uxc/releases/latest/download/homebridge-a
 # CONFIGURATION VARIABLES (Edit these to tune your deployment)
 # ==============================================================================
 CONTAINER_NAME="homebridge"
-TARGET_MOUNT="/mnt/X6"                     # Physical host SSD mount point
+TARGET_MOUNT="/mnt/X6"                     # Physical host flash drive mount point
 
 # Derived Variables: Moving TARGET_MOUNT moves the entire installation setup
 ARCHIVE="$TARGET_MOUNT/homebridge.tar.gz"
@@ -75,7 +75,7 @@ printf '\n\n\n'
 # ==========================================
 echo "🔄 [Phase 1] Syncing OpenWrt core infrastructure dependencies..."
 
-# Verify the SSD is mounted before proceeding to prevent writing to RAM
+# Verify the flash drive is mounted before proceeding to prevent writing to RAM
 echo "🔍 Verifying target storage..."
 if ! grep -qs " $TARGET_MOUNT " /proc/mounts; then
     echo "❌ Error: $TARGET_MOUNT is not mounted. Aborting to avoid running in RAM." >&2
@@ -171,7 +171,7 @@ echo "📝 [Phase 5] Injecting master variable matrix via individual JQ splits..
 
 # Split 1: Update Persistent Storage Path Mount Source
 jq --arg src "$PERSISTENT_DATA_SOURCE" \
-    '.mounts = (.mounts | map(if .destination == "/var/lib/homebridge" then .source = $src else . end))' \
+    '.mounts = (.mounts | map(if .destination == "/homebridge" then .source = $src else . end))' \
     "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
 
 echo "   ↳ Mount Target bound to: $PERSISTENT_DATA_SOURCE ✅"
@@ -179,7 +179,7 @@ echo "   ↳ Mount Target bound to: $PERSISTENT_DATA_SOURCE ✅"
 
 # Split 2: Update Timezone (TZ)
 jq --arg tz "TZ=$TIMEZONE" \
-    '.process.env = (.process.env | map(if startswith("TZ=") then $tz else . end))' \
+    '.process.env = (.process.env | map(select(startswith("TZ=") | not)) + [$tz])' \
     "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
 
 echo "   ↳ Timezone assigned to: $TIMEZONE ✅"
@@ -187,7 +187,7 @@ echo "   ↳ Timezone assigned to: $TIMEZONE ✅"
 
 # Split 3: Update MDNS Interface Network Bridge
 jq --arg mdns "MDNS_INTERFACE=$MDNS_NET_INTERFACE" \
-    '.process.env = (.process.env | map(if startswith("MDNS_INTERFACE=") then $mdns else . end))' \
+    '.process.env = (.process.env | map(select(startswith("MDNS_INTERFACE=") | not)) + [$mdns])' \
     "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
 
 echo "   ↳ mDNS broadcast mapped to: $MDNS_NET_INTERFACE ✅"
@@ -195,7 +195,7 @@ echo "   ↳ mDNS broadcast mapped to: $MDNS_NET_INTERFACE ✅"
 
 # Split 4: Update Node.js Old Space Memory Constraints
 jq --arg node_opt "NODE_OPTIONS=--max-old-space-size=$NODE_MEMORY_LIMIT" \
-    '.process.env = (.process.env | map(if startswith("NODE_OPTIONS=") then $node_opt else . end))' \
+    '.process.env = (.process.env | map(select(startswith("NODE_OPTIONS=") | not)) + [$node_opt])' \
     "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
 
 echo "   ↳ Node engine memory threshold set to: ${NODE_MEMORY_LIMIT}MB ✅"
@@ -203,7 +203,7 @@ echo "   ↳ Node engine memory threshold set to: ${NODE_MEMORY_LIMIT}MB ✅"
 
 # Split 5: Update Libuv Thread Pool Allocation
 jq --arg threads "UV_THREADPOOL_SIZE=$THREAD_POOL_SIZE" \
-    '.process.env = (.process.env | map(if startswith("UV_THREADPOOL_SIZE=") then $threads else . end))' \
+    '.process.env = (.process.env | map(select(startswith("UV_THREADPOOL_SIZE=") | not)) + [$threads])' \
     "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
 
 echo "   ↳ Libuv backend worker threads balanced at: $THREAD_POOL_SIZE ✅"
@@ -211,7 +211,7 @@ echo "   ↳ Libuv backend worker threads balanced at: $THREAD_POOL_SIZE ✅"
 
 # Split 6: Update Homebridge Binding IP Target
 jq --arg ip "HOMEBRIDGE_IP=$BIND_IP" \
-    '.process.env = (.process.env | map(if startswith("HOMEBRIDGE_IP=") then $ip else . end))' \
+    '.process.env = (.process.env | map(select(startswith("HOMEBRIDGE_IP=") | not)) + [$ip])' \
     "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
 
 echo "   ↳ Network socket interface listening on: $BIND_IP ✅"
@@ -219,7 +219,7 @@ echo "   ↳ Network socket interface listening on: $BIND_IP ✅"
 
 # Split 6b: Update Web UI Binding Host
 jq --arg ui_host "HOMEBRIDGE_CONFIG_UI_HOST=$BIND_IP" \
-    '.process.env += [$ui_host]' \
+    '.process.env = (.process.env | map(select(startswith("HOMEBRIDGE_CONFIG_UI_HOST=") | not)) + [$ui_host])' \
     "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
 
 echo "   ↳ Web UI socket host forced to: $BIND_IP ✅"
@@ -235,7 +235,7 @@ echo "   ↳ Kernel privilege escalation guard: $NO_NEW_PRIVILEGES ✅"
 
 printf '\n\n\n'
 
-echo "⚙️ OCI JSON blueprints compiled permanently onto SSD."
+echo "⚙️ OCI JSON blueprints compiled permanently onto flash drive."
 echo "========(+) DONE ✅ (+)========"
 printf '\n\n\n'
 
