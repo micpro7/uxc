@@ -129,24 +129,24 @@ jobs:
       - name: Inject Compatibility Layer (Dummy Sudo & Node Paths)
         run: |
           set -euo pipefail
-          sudo chroot bundle/rootfs /bin/sh -c "
+          sudo chroot bundle/rootfs /bin/sh -c '
             set -eu
-            echo '--- Creating global node_modules path ---'
+            echo "--- Creating global node_modules path ---"
             mkdir -p /usr/local/lib/node_modules
             
-            echo '--- Provisioning dummy sudo executable ---'
-            cat << 'EOF' > /usr/bin/sudo
+            echo "--- Provisioning dummy sudo executable ---"
+            cat << "EOF" > /usr/bin/sudo
 #!/bin/sh
-while [ \$# -gt 0 ]; do
-    case \"\$1\" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         -*) shift ;;
         *) break ;;
     esac
 done
-exec \"\$@\"
+exec "$@"
 EOF
             chmod +x /usr/bin/sudo
-          "
+          '
 
       - name: Verify ARM64 Runtime Binaries
         run: |
