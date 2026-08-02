@@ -107,8 +107,7 @@ jobs:
               g++ \
               git \
               linux-headers \
-              shadow \
-              sudo 
+              shadow
           "
 
       - name: Install Homebridge Core & UI
@@ -125,6 +124,28 @@ jobs:
               --no-fund \
               homebridge@${HB_VER} \
               homebridge-config-ui-x@${UI_VER}
+          "
+
+      - name: Inject Compatibility Layer (Dummy Sudo & Node Paths)
+        run: |
+          set -euo pipefail
+          sudo chroot bundle/rootfs /bin/sh -c "
+            set -eu
+            echo '--- Creating global node_modules path ---'
+            mkdir -p /usr/local/lib/node_modules
+            
+            echo '--- Provisioning dummy sudo executable ---'
+            cat << 'EOF' > /usr/bin/sudo
+#!/bin/sh
+while [ \$# -gt 0 ]; do
+    case \"\$1\" in
+        -*) shift ;;
+        *) break ;;
+    esac
+done
+exec \"\$@\"
+EOF
+            chmod +x /usr/bin/sudo
           "
 
       - name: Verify ARM64 Runtime Binaries
@@ -169,9 +190,7 @@ jobs:
             export HOME=/homebridge
             mkdir -p /homebridge
             
-            # Launch hb-service natively to trap underlying execution errors.
-            # timeout ensures it doesn't hang the runner if it succeeds and loops.
-            timeout 10 /usr/local/bin/hb-service run -U /homebridge || true
+            timeout 10 /usr/local/bin/hb-service run --allow-root -U /homebridge || true
             
             echo '--- Purging Build Caches & Temp Files ---'
             npm cache clean --force
@@ -271,7 +290,7 @@ jobs:
             ### 🚀 Automated Native ARM64 Build
             Deterministic, immutable UXC bundle for OpenWrt.
             - **OS:** Alpine Linux ${{ env.ALPINE_VER }} (aarch64)
-            - **Core:** Node.js, npm, Tini, bash, shadow
+            - **Core:** Node.js, npm, Tini, bash, shadow, dummy-sudo
             - **App:** `homebridge@${{ env.HB_VER }}`, `homebridge-config-ui-x@${{ env.UI_VER }}`
           files: |
             homebridge-arm64.tar.gz
