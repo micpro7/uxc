@@ -9,16 +9,18 @@
     "args": [
       "/sbin/tini",
       "--",
-      "hb-service",
+      "/usr/local/bin/hb-service",
       "run",
       "-U",
       "/homebridge"
     ],
     "env": [
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "HOME=/homebridge",
+      "HOMEBRIDGE_CONFIG_UI=1",
       "NODE_ENV=production"
     ],
-    "cwd": "/",
+    "cwd": "/homebridge",
     "noNewPrivileges": false
   },
   "root": {
