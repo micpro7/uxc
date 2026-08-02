@@ -81,7 +81,7 @@ jobs:
           sudo mount -t proc proc bundle/rootfs/proc
           sudo mount -t sysfs sys bundle/rootfs/sys
 
-      - name: Install System Dependencies (Including linux-headers)
+      - name: Install System Dependencies
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
@@ -103,8 +103,8 @@ jobs:
               make \
               g++ \
               git \
-              shadow \
-              linux-headers
+              linux-headers \
+              shadow
             
             update-ca-certificates
           "
@@ -128,29 +128,7 @@ jobs:
             ln -sf /usr/local/bin/hb-service /usr/bin/hb-service || true
           "
 
-      - name: Inject Compatibility Layer (Dummy Sudo & Node Paths)
-        run: |
-          set -euo pipefail
-          sudo chroot bundle/rootfs /bin/sh -c '
-            set -eu
-            echo "--- Creating global node_modules path ---"
-            mkdir -p /usr/local/lib/node_modules
-            
-            echo "--- Provisioning dummy sudo executable ---"
-            cat << "EOF" > /usr/bin/sudo
-#!/bin/sh
-while [ $# -gt 0 ]; do
-    case "$1" in
-        -*) shift ;;
-        *) break ;;
-    esac
-done
-exec "$@"
-EOF
-            chmod +x /usr/bin/sudo
-          '
-
-      - name: Verify Runtime Binaries & System Integrity
+      - name: Verify ARM64 Runtime Binaries & Integrity
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
@@ -158,9 +136,15 @@ EOF
             echo '--- Architecture Check ---'
             uname -m
             
-            echo '--- Tini Binary Verification ---'
+            echo '--- Tini Binary Check ---'
             which tini
             tini --version
+            
+            echo '--- Node Binary Check ---'
+            file \$(which node)
+            
+            echo '--- Homebridge Binary Check ---'
+            file \$(which homebridge)
             
             echo '--- Global NPM Modules Tree ---'
             npm list -g --depth=0
@@ -186,12 +170,18 @@ EOF
             npm -v
             homebridge --version
             
+            which hb-service
+            hb-service --version
+            
             echo '--- CI Runtime Simulation Check ---'
             export HOME=/homebridge
+            mkdir -p /homebridge
             
+            # Launch hb-service natively to trap underlying execution errors.
+            # timeout ensures it doesn't hang the runner if it succeeds and loops.
             timeout 10 /usr/local/bin/hb-service run --allow-root -U /homebridge || true
             
-            echo '--- Deep Purging Build Caches, Documentation & Temp Files ---'
+            echo '--- Purging Build Caches, Documentation & Temp Files ---'
             npm cache clean --force
             rm -rf /root/.npm
             rm -rf /usr/lib/node_modules/npm/docs
@@ -228,7 +218,7 @@ EOF
             echo "| **Release Tag** | \`${VERSION}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Cleanup Host Mounts & Verify OCI JSON Integrity
+      - name: Cleanup Host Mounts & Verify
         if: always()
         run: |
           set -euo pipefail
@@ -283,7 +273,7 @@ EOF
           
           echo "✅ Bundle archive validated successfully."
 
-      - name: Upload Build Artifacts
+      - name: Upload Build Artifacts (Debug Backup)
         uses: actions/upload-artifact@v4
         with:
           name: homebridge-arm64-bundle
@@ -301,7 +291,7 @@ EOF
             ### 🚀 Automated Native ARM64 Build
             Deterministic, immutable UXC bundle for OpenWrt.
             - **OS Base:** Alpine Linux ${{ env.ALPINE_VER }} (aarch64)
-            - **Core Tools:** Node.js, npm, Tini, bash, shadow, dummy-sudo, linux-headers
+            - **Core Tools:** Node.js, npm, Tini, bash, shadow, linux-headers
             - **App Versions:** `homebridge@${{ env.RESOLVED_HB_VER }}`, `homebridge-config-ui-x@${{ env.UI_VER }}`
           files: |
             homebridge-arm64.tar.gz
