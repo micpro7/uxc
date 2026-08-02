@@ -133,7 +133,6 @@ jobs:
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c '
             mkdir -p /usr/local/lib/node_modules /usr/lib/node_modules
-            ln -sfn /usr/lib/node_modules /usr/local/lib/node_modules
             
             echo "#!/bin/sh" > /usr/bin/sudo
             echo "while [ \$# -gt 0 ]; do case \"\$1\" in -*) shift ;; *) break ;; esac; done" >> /usr/bin/sudo
