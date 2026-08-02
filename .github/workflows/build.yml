@@ -98,7 +98,15 @@ jobs:
               tzdata \
               ca-certificates \
               bash \
-              file
+              file \
+              avahi-compat-libdns_sd \
+              libstdc++ \
+              ffmpeg \
+              python3 \
+              make \
+              g++ \
+              git \
+              linux-headers
           "
 
       - name: Install Homebridge Core & UI
@@ -217,18 +225,32 @@ jobs:
             --pax-option=delete=atime,delete=ctime \
             -czf ../homebridge-arm64.tar.gz config.json rootfs
             
+      - name: Generate Integrity Checksum
+        run: |
+          set -euo pipefail
+          sha256sum homebridge-arm64.tar.gz > SHA256SUMS
+          echo "✅ Checksum generated:"
+          cat SHA256SUMS
+            
       - name: Validate Bundle Archive
         run: |
           set -euo pipefail
-          
           test -s homebridge-arm64.tar.gz
-          
           ARCHIVE_FILES=$(tar -tf homebridge-arm64.tar.gz)
           
           [[ "$ARCHIVE_FILES" =~ rootfs ]] || { echo "❌ 'rootfs' missing from archive!"; exit 1; }
           [[ "$ARCHIVE_FILES" =~ config.json ]] || { echo "❌ 'config.json' missing from archive!"; exit 1; }
           
           echo "✅ Bundle archive validated successfully."
+
+      - name: Upload Build Artifacts (Debug Backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: homebridge-arm64-bundle
+          path: |
+            homebridge-arm64.tar.gz
+            SHA256SUMS
+          retention-days: 7
 
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
@@ -241,7 +263,9 @@ jobs:
             - **OS:** Alpine Linux ${{ env.ALPINE_VER }} (aarch64)
             - **Core:** Node.js, npm, Tini, bash
             - **App:** `homebridge@${{ env.HB_VER }}`, `homebridge-config-ui-x@${{ env.UI_VER }}`
-          files: homebridge-arm64.tar.gz
+          files: |
+            homebridge-arm64.tar.gz
+            SHA256SUMS
           prerelease: false
           make_latest: true
         env:
