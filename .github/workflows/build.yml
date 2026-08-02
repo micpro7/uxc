@@ -107,7 +107,8 @@ jobs:
               g++ \
               git \
               linux-headers \
-              shadow
+              shadow \
+              sudo 
           "
 
       - name: Install Homebridge Core & UI
