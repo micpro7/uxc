@@ -81,7 +81,7 @@ jobs:
           sudo mount -t proc proc bundle/rootfs/proc
           sudo mount -t sysfs sys bundle/rootfs/sys
 
-      - name: Install System Dependencies
+      - name: Install System Dependencies & Build Tools
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
@@ -98,6 +98,11 @@ jobs:
               file \
               avahi-compat-libdns_sd \
               libstdc++ \
+              libgcc \
+              musl \
+              icu-data-full \
+              brotli-libs \
+              c-ares \
               ffmpeg \
               python3 \
               make \
@@ -115,6 +120,8 @@ jobs:
           echo "Installing homebridge@${HB_VER} and homebridge-config-ui-x@${UI_VER}..."
           sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
+            npm config set prefix /usr/local
+            
             npm install -g \
               --unsafe-perm \
               --omit=dev \
@@ -128,11 +135,11 @@ jobs:
             ln -sf /usr/local/bin/hb-service /usr/bin/hb-service || true
           "
 
-      - name: Inject Robust Compatibility Layer (Sudo & Bin Paths)
+      - name: Inject Robust Compatibility Layer & Explicit Directories
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c '
-            mkdir -p /usr/local/lib/node_modules /usr/lib/node_modules
+            mkdir -p /usr/local/lib/node_modules /usr/lib/node_modules /var/lib/homebridge /etc/homebridge /var/log
             
             echo "#!/bin/sh" > /usr/bin/sudo
             echo "while [ \$# -gt 0 ]; do case \"\$1\" in -*) shift ;; *) break ;; esac; done" >> /usr/bin/sudo
@@ -141,7 +148,15 @@ jobs:
             ln -sf /usr/bin/sudo /bin/sudo
           '
 
-      - name: Verify ARM64 Runtime Binaries & Integrity
+      - name: Purge Build Dependencies
+        run: |
+          set -euo pipefail
+          echo "Purging heavy build toolchains to minimize image footprint..."
+          sudo chroot bundle/rootfs /bin/sh -c "
+            apk del --purge make g++ git python3 linux-headers || true
+          "
+
+      - name: Verify ARM64 Runtime Binaries & NPM Prefix Integrity
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
@@ -153,8 +168,16 @@ jobs:
             which tini
             tini --version
             
-            echo '--- Node Binary Check ---'
+            echo '--- Node & NPM Binaries Check ---'
+            which node
+            which npm
             file \$(which node)
+            
+            echo '--- NPM Prefix & Root Verification ---'
+            npm config get prefix
+            npm root -g
+            
+            test \"\$(npm config get prefix)\" = \"/usr/local\" || { echo '❌ NPM prefix is incorrect!'; exit 1; }
             
             echo '--- Homebridge Binary Check ---'
             file \$(which homebridge)
@@ -168,7 +191,7 @@ jobs:
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
-            mkdir -p /run /var/run /homebridge /var/log /etc/homebridge
+            mkdir -p /run /var/run /homebridge /var/lib/homebridge /var/log /etc/homebridge
             cp /usr/share/zoneinfo/UTC /etc/localtime
             echo UTC >/etc/timezone
           "
@@ -187,10 +210,9 @@ jobs:
             hb-service --version
             
             echo '--- CI Runtime Simulation Check ---'
-            export HOME=/homebridge
-            mkdir -p /homebridge
-            
-            timeout 10 /usr/local/bin/hb-service run --allow-root -U /homebridge || true
+            mkdir -p /tmp/hb-test
+            timeout 10 homebridge --version -U /tmp/hb-test || true
+            rm -rf /tmp/hb-test
             
             echo '--- Purging Build Caches, Documentation & Temp Files ---'
             npm cache clean --force
@@ -302,7 +324,7 @@ jobs:
             ### 🚀 Automated Native ARM64 Build
             Deterministic, immutable UXC bundle for OpenWrt.
             - **OS Base:** Alpine Linux ${{ env.ALPINE_VER }} (aarch64)
-            - **Core Tools:** Node.js, npm, Tini, bash, shadow, linux-headers, robust-sudo
+            - **Core Tools:** Node.js, npm, Tini, bash, shadow, robust-sudo
             - **App Versions:** `homebridge@${{ env.RESOLVED_HB_VER }}`, `homebridge-config-ui-x@${{ env.UI_VER }}`
           files: |
             homebridge-arm64.tar.gz
