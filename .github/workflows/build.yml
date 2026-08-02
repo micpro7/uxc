@@ -106,7 +106,8 @@ jobs:
               make \
               g++ \
               git \
-              linux-headers
+              linux-headers \
+              shadow
           "
 
       - name: Install Homebridge Core & UI
@@ -160,8 +161,16 @@ jobs:
             npm -v
             homebridge --version
             
-            which hb-service || true
-            hb-service --version || true
+            which hb-service
+            hb-service --version
+            
+            echo '--- CI Runtime Simulation Check ---'
+            export HOME=/homebridge
+            mkdir -p /homebridge
+            
+            # Launch hb-service natively to trap underlying execution errors.
+            # timeout ensures it doesn't hang the runner if it succeeds and loops.
+            timeout 10 /usr/local/bin/hb-service run -U /homebridge || true
             
             echo '--- Purging Build Caches & Temp Files ---'
             npm cache clean --force
@@ -261,7 +270,7 @@ jobs:
             ### 🚀 Automated Native ARM64 Build
             Deterministic, immutable UXC bundle for OpenWrt.
             - **OS:** Alpine Linux ${{ env.ALPINE_VER }} (aarch64)
-            - **Core:** Node.js, npm, Tini, bash
+            - **Core:** Node.js, npm, Tini, bash, shadow
             - **App:** `homebridge@${{ env.HB_VER }}`, `homebridge-config-ui-x@${{ env.UI_VER }}`
           files: |
             homebridge-arm64.tar.gz
