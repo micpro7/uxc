@@ -132,21 +132,10 @@ jobs:
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c '
-            set -eu
-            echo "--- Creating global node_modules path ---"
             mkdir -p /usr/local/lib/node_modules
-            
-            echo "--- Provisioning robust dummy sudo executable ---"
-            cat << "EOF" > /usr/bin/sudo
-#!/bin/sh
-while [ $# -gt 0 ]; do
-    case "$1" in
-        -*) shift ;;
-        *) break ;;
-    esac
-done
-exec "$@"
-EOF
+            echo "#!/bin/sh" > /usr/bin/sudo
+            echo "while [ \$# -gt 0 ]; do case \"\$1\" in -*) shift ;; *) break ;; esac; done" >> /usr/bin/sudo
+            echo "exec \"\$@\"" >> /usr/bin/sudo
             chmod +x /usr/bin/sudo
             ln -sf /usr/bin/sudo /bin/sudo
           '
