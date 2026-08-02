@@ -54,8 +54,6 @@ jobs:
             echo "HB_VER=latest" >> $GITHUB_ENV
             echo "UI_VER=latest" >> $GITHUB_ENV
           fi
-          
-          echo "VERSION=$(date +'%Y.%m.%d')-${GITHUB_RUN_NUMBER}" >> $GITHUB_ENV
 
       - name: Fetch Alpine Minirootfs
         run: |
@@ -83,12 +81,11 @@ jobs:
           sudo mount -t proc proc bundle/rootfs/proc
           sudo mount -t sysfs sys bundle/rootfs/sys
 
-      - name: Install System Dependencies
+      - name: Install System Dependencies (Including linux-headers)
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
-            apk update
             apk add --no-cache \
               nodejs \
               npm \
@@ -106,11 +103,13 @@ jobs:
               make \
               g++ \
               git \
-              linux-headers \
-              shadow
+              shadow \
+              linux-headers
+            
+            update-ca-certificates
           "
 
-      - name: Install Homebridge Core & UI
+      - name: Install Homebridge Core & UI + Bin Symlinks
         run: |
           set -euo pipefail
           echo "Installing homebridge@${HB_VER} and homebridge-config-ui-x@${UI_VER}..."
@@ -124,6 +123,9 @@ jobs:
               --no-fund \
               homebridge@${HB_VER} \
               homebridge-config-ui-x@${UI_VER}
+
+            ln -sf /usr/local/bin/homebridge /usr/bin/homebridge || true
+            ln -sf /usr/local/bin/hb-service /usr/bin/hb-service || true
           "
 
       - name: Inject Compatibility Layer (Dummy Sudo & Node Paths)
@@ -148,7 +150,7 @@ EOF
             chmod +x /usr/bin/sudo
           '
 
-      - name: Verify ARM64 Runtime Binaries
+      - name: Verify Runtime Binaries & System Integrity
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
@@ -156,11 +158,12 @@ EOF
             echo '--- Architecture Check ---'
             uname -m
             
-            echo '--- Node Binary Check ---'
-            file \$(which node)
+            echo '--- Tini Binary Verification ---'
+            which tini
+            tini --version
             
-            echo '--- Homebridge Binary Check ---'
-            file \$(which homebridge)
+            echo '--- Global NPM Modules Tree ---'
+            npm list -g --depth=0
           "
 
       - name: Initialize OCI Runtime Directories & Timezone
@@ -168,12 +171,12 @@ EOF
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
-            mkdir -p /run /var/run /var/lib/homebridge /var/log /etc/homebridge
+            mkdir -p /run /var/run /homebridge /var/log /etc/homebridge
             cp /usr/share/zoneinfo/UTC /etc/localtime
             echo UTC >/etc/timezone
           "
 
-      - name: Health Checks & Bundle Optimization
+      - name: Health Checks & Deep Footprint Optimization
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
@@ -183,31 +186,35 @@ EOF
             npm -v
             homebridge --version
             
-            which hb-service
-            hb-service --version
-            
             echo '--- CI Runtime Simulation Check ---'
             export HOME=/homebridge
-            mkdir -p /homebridge
             
             timeout 10 /usr/local/bin/hb-service run --allow-root -U /homebridge || true
             
-            echo '--- Purging Build Caches & Temp Files ---'
+            echo '--- Deep Purging Build Caches, Documentation & Temp Files ---'
             npm cache clean --force
             rm -rf /root/.npm
             rm -rf /usr/lib/node_modules/npm/docs
             rm -rf /usr/lib/node_modules/npm/html
+            rm -rf /usr/share/man /usr/share/doc /usr/share/info
             rm -rf /var/cache/apk/*
             find /tmp -mindepth 1 -delete
             find /var/tmp -mindepth 1 -delete
           "
+
+      - name: Resolve Dynamic Release Version Tag
+        run: |
+          set -euo pipefail
+          HB_VERSION=$(sudo chroot bundle/rootfs /bin/sh -c 'homebridge --version' | tr -d '\r\n')
+          RELEASE_TAG="$(date +'%Y.%m.%d')-hb${HB_VERSION}"
+          echo "VERSION=${RELEASE_TAG}" >> $GITHUB_ENV
+          echo "RESOLVED_HB_VER=${HB_VERSION}" >> $GITHUB_ENV
 
       - name: Generate Build Summary Report
         run: |
           set -euo pipefail
           NODE_VER=$(sudo chroot bundle/rootfs /bin/sh -c 'node -v')
           NPM_VER=$(sudo chroot bundle/rootfs /bin/sh -c 'npm -v')
-          HB_VERSION=$(sudo chroot bundle/rootfs /bin/sh -c 'homebridge --version')
           
           {
             echo "### 🚀 Homebridge UXC Build Manifest"
@@ -216,12 +223,12 @@ EOF
             echo "| **OS Base** | Alpine Linux ${ALPINE_VER} (ARM64) |"
             echo "| **Node.js** | ${NODE_VER} |"
             echo "| **npm** | v${NPM_VER} |"
-            echo "| **Homebridge** | v${HB_VERSION} (Target: ${HB_VER}) |"
+            echo "| **Homebridge** | v${RESOLVED_HB_VER} |"
             echo "| **Config UI X** | Target: ${UI_VER} |"
-            echo "| **Build ID** | ${VERSION} |"
+            echo "| **Release Tag** | \`${VERSION}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Cleanup Host Mounts & Verify
+      - name: Cleanup Host Mounts & Verify OCI JSON Integrity
         if: always()
         run: |
           set -euo pipefail
@@ -234,11 +241,15 @@ EOF
           
           test -f bundle/config.template.json || (echo '❌ Missing config.template.json!' && exit 1)
 
-      - name: Stage Production OCI Config
+      - name: Stage Production OCI Config & Validate JSON
         run: |
           set -euo pipefail
           echo "Copying config.template.json -> config.json..."
           cp bundle/config.template.json bundle/config.json
+          
+          echo "Validating OCI config.json structure with JQ..."
+          jq empty bundle/config.json || { echo '❌ Invalid JSON in config.json!'; exit 1; }
+          echo "✅ OCI JSON syntax validated successfully."
 
       - name: Package Deterministic OCI Bundle
         run: |
@@ -272,7 +283,7 @@ EOF
           
           echo "✅ Bundle archive validated successfully."
 
-      - name: Upload Build Artifacts (Debug Backup)
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: homebridge-arm64-bundle
@@ -289,9 +300,9 @@ EOF
           body: |
             ### 🚀 Automated Native ARM64 Build
             Deterministic, immutable UXC bundle for OpenWrt.
-            - **OS:** Alpine Linux ${{ env.ALPINE_VER }} (aarch64)
-            - **Core:** Node.js, npm, Tini, bash, shadow, dummy-sudo
-            - **App:** `homebridge@${{ env.HB_VER }}`, `homebridge-config-ui-x@${{ env.UI_VER }}`
+            - **OS Base:** Alpine Linux ${{ env.ALPINE_VER }} (aarch64)
+            - **Core Tools:** Node.js, npm, Tini, bash, shadow, dummy-sudo, linux-headers
+            - **App Versions:** `homebridge@${{ env.RESOLVED_HB_VER }}`, `homebridge-config-ui-x@${{ env.UI_VER }}`
           files: |
             homebridge-arm64.tar.gz
             SHA256SUMS
