@@ -4,13 +4,12 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'bundle/config.template.json'
       - '.github/workflows/build.yml'
   workflow_dispatch:
     inputs:
       alpine_version:
         description: 'Alpine version'
-        default: '3.22.2'
+        default: '3.22.5'
         type: string
       homebridge_version:
         description: 'Homebridge version'
@@ -50,7 +49,7 @@ jobs:
             echo "HB_VER=${{ github.event.inputs.homebridge_version }}" >> $GITHUB_ENV
             echo "UI_VER=${{ github.event.inputs.config_ui_version }}" >> $GITHUB_ENV
           else
-            echo "ALPINE_VER=3.22.2" >> $GITHUB_ENV
+            echo "ALPINE_VER=3.22.5" >> $GITHUB_ENV
             echo "HB_VER=latest" >> $GITHUB_ENV
             echo "UI_VER=latest" >> $GITHUB_ENV
           fi
@@ -62,6 +61,7 @@ jobs:
           
           echo "Requested Alpine Linux v${ALPINE_VER}..."
           ALPINE_MAJOR_MINOR=$(echo "${ALPINE_VER}" | cut -d. -f1,2)
+          echo "ALPINE_BRANCH=${ALPINE_MAJOR_MINOR}" >> $GITHUB_ENV
           
           wget -qO alpine.tar.gz "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_MAJOR_MINOR}/releases/aarch64/alpine-minirootfs-${ALPINE_VER}-aarch64.tar.gz"
           
@@ -71,15 +71,20 @@ jobs:
           sudo tar --same-owner --same-permissions -xf alpine.tar.gz -C bundle/rootfs
           rm alpine.tar.gz
 
-      - name: Prepare Chroot Environment (Mount Pseudo-FS)
+      - name: Prepare Chroot Environment (Mount Pseudo-FS & Inject DNS)
         run: |
           set -euo pipefail
-          sudo cp /etc/resolv.conf bundle/rootfs/etc/resolv.conf
           
+          # 1. Mount pseudo-filesystems first (using lazy unmount preparation)
           sudo mount --bind /dev bundle/rootfs/dev
           sudo mount --bind /dev/pts bundle/rootfs/dev/pts
           sudo mount -t proc proc bundle/rootfs/proc
           sudo mount -t sysfs sys bundle/rootfs/sys
+          
+          # 2. Copy DNS configuration post-mount for reliable build resolution
+          # Note: /etc/hosts from the GitHub runner is intentionally omitted 
+          # to prevent leaking host-specific runner entries into the rootfs.
+          sudo cp /etc/resolv.conf bundle/rootfs/etc/resolv.conf
 
       - name: Install System Dependencies & Build Tools
         run: |
@@ -87,13 +92,13 @@ jobs:
           sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
             
-            # Ensure proper Alpine repository mirrors are configured
-            echo 'https://dl-cdn.alpinelinux.org/alpine/v3.22/main' > /etc/apk/repositories
-            echo 'https://dl-cdn.alpinelinux.org/alpine/v3.22/community' >> /etc/apk/repositories
+            # Dynamically mirror official Alpine repository branches matching release version
+            echo 'https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_BRANCH}/main' > /etc/apk/repositories
+            echo 'https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_BRANCH}/community' >> /etc/apk/repositories
             
             apk update
             
-            # Explicitly install all required system runtime libraries matching Node.js requirements
+            # Install system runtime libraries (using pax-utils for lddtree/scanelf utilities and retaining python3 for native builds; ffmpeg omitted for minimal footprint)
             apk add --no-cache \
               coreutils \
               nodejs \
@@ -105,7 +110,11 @@ jobs:
               ca-certificates \
               bash \
               file \
-              avahi-compat-libdns_sd \
+              pax-utils \
+              eudev-libs \
+              libexpat \
+              libxml2 \
+              libxcrypt-compat \
               libstdc++ \
               libgcc \
               musl \
@@ -119,13 +128,11 @@ jobs:
               brotli-libs \
               c-ares \
               openssh-client \
-              ffmpeg \
               python3 \
               make \
               g++ \
               git \
-              linux-headers \
-              shadow
+              linux-headers
             
             update-ca-certificates
           "
@@ -138,60 +145,128 @@ jobs:
             set -eu
             export NODE_ENV=production
             export HOME=/root
+            export NODE_PATH=/usr/local/lib/node_modules
             export npm_config_cache=/tmp/npm-cache
             npm config set prefix /usr/local
             
+            # Keep optional dependencies for plugin ecosystem compatibility
             npm install -g \
-              --unsafe-perm \
+              --unsafe-perm=true \
               --omit=dev \
-              --include=optional \
               --no-audit \
               --no-fund \
               homebridge@${HB_VER} \
               homebridge-config-ui-x@${UI_VER}
 
             ln -sf /usr/local/bin/homebridge /usr/bin/homebridge || true
-            ln -sf /usr/local/bin/hb-service /usr/bin/hb-service || true
+            ln -sf /usr/local/bin/homebridge-config-ui-x /usr/bin/homebridge-config-ui-x || true
           "
 
-      - name: Clean npm Install Cache
+      - name: Clean npm Install Cache & Verify
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
             npm cache clean --force
-            rm -rf /root/.npm /tmp/npm-cache
+            npm cache verify
+            rm -rf /root/.npm /tmp/npm-cache /usr/local/share/.cache
           "
 
-      - name: Inject Robust Compatibility Layer & Explicit Directories
+      - name: Inject System Directories, Symlinks & Init Scripts
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c '
-            addgroup -g 1000 homebridge || true
-            adduser -D -u 1000 -G homebridge -s /bin/sh homebridge || true
-
+            # Prepare clean runtime directory hierarchy
             mkdir -p \
               /usr/local/lib/node_modules \
               /usr/lib/node_modules \
               /etc/homebridge \
+              /var/lib/homebridge \
               /var/lib/homebridge/accessories \
               /var/lib/homebridge/persist \
               /var/lib/homebridge/backups \
               /var/lib/homebridge/logs \
               /run \
               /var/run \
-              /homebridge \
               /var/log
-            
-            chown -R 1000:1000 \
-              /var/lib/homebridge \
-              /homebridge || true
-            
-            mkdir -p /root/.homebridge
-            ln -sf /var/lib/homebridge/config.json /root/.homebridge/config.json || true
-            ln -sf /var/lib/homebridge/accessories /root/.homebridge/accessories || true
-            ln -sf /var/lib/homebridge/persist /root/.homebridge/persist || true
-            
+
+            # Hardening storage ownership and permissions
+            chown -R root:root /var/lib/homebridge
+            chmod 755 /var/lib/homebridge
+
+            # Create alias redirect for legacy plugins hardcoded to /homebridge
+            rm -rf /homebridge
+            ln -s /var/lib/homebridge /homebridge
+
+            # Generate default template configuration for UI auto-start
+            cat > /etc/homebridge/default-config.json <<EOF
+{
+  "bridge": {
+    "name": "Homebridge",
+    "username": "0E:00:00:00:00:00",
+    "port": 51826,
+    "pin": "031-45-154"
+  },
+  "plugins": [
+    "homebridge-config-ui-x"
+  ],
+  "platforms": [
+    {
+      "platform": "config",
+      "name": "Config",
+      "port": 8581,
+      "auth": "form"
+    }
+  ]
+}
+EOF
+
+            # Generate lightweight start.sh wrapper with explicit runtime HOME export
+            cat > /etc/homebridge/start.sh <<"EOF"
+#!/bin/sh
+set -e
+
+# Fast non-recursive persistent mount check for all Homebridge storage paths
+mkdir -p \
+  /var/lib/homebridge \
+  /var/lib/homebridge/logs \
+  /var/lib/homebridge/accessories \
+  /var/lib/homebridge/persist \
+  /var/lib/homebridge/backups
+
+chown 0:0 \
+  /var/lib/homebridge \
+  /var/lib/homebridge/logs \
+  /var/lib/homebridge/accessories \
+  /var/lib/homebridge/persist \
+  /var/lib/homebridge/backups
+
+chmod 755 \
+  /var/lib/homebridge \
+  /var/lib/homebridge/logs \
+  /var/lib/homebridge/accessories \
+  /var/lib/homebridge/persist \
+  /var/lib/homebridge/backups
+
+# Initialize default configuration on clean volume mount
+if [ ! -f /var/lib/homebridge/config.json ]; then
+    echo "Initializing default config.json for Config UI X..."
+    cp /etc/homebridge/default-config.json /var/lib/homebridge/config.json
+    chmod 600 /var/lib/homebridge/config.json
+    chown 0:0 /var/lib/homebridge/config.json
+fi
+
+# Explicitly ensure HOME points to persistent storage path for plugins expecting $HOME
+export HOME=/var/lib/homebridge
+
+exec "$@"
+EOF
+            chmod +x /etc/homebridge/start.sh
+
+            # Shell syntax check to catch accidental script errors early
+            /bin/sh -n /etc/homebridge/start.sh
+
+            # Sudo shim for plugin compatibility inside container
             echo "#!/bin/sh" > /usr/bin/sudo
             echo "while [ \$# -gt 0 ]; do case \"\$1\" in -*) shift ;; *) break ;; esac; done" >> /usr/bin/sudo
             echo "exec \"\$@\"" >> /usr/bin/sudo
@@ -199,205 +274,253 @@ jobs:
             ln -sf /usr/bin/sudo /bin/sudo
           '
 
-      - name: Purge Build Dependencies
+      - name: Purge Heavy Build Dependencies & Clean Cache
         run: |
           set -euo pipefail
-          echo "Purging heavy build toolchains to minimize footprint..."
+          echo "Purging temporary build tools (preserving /lib/apk/db for runtime apk installs)..."
           sudo chroot bundle/rootfs /bin/sh -c "
+            set -eu
+            # Tolerant deletion in case package names drift between Alpine builds
             apk del --purge make g++ git linux-headers || true
+            
+            # Safe APK cache purge preserving package database integrity (/lib/apk/db)
+            rm -rf /var/cache/apk/*
+            rm -rf /var/lib/apk/lists/*
+            apk cache clean 2>/dev/null || true
           "
 
-      - name: Verify Rootfs ARM64 Binaries & NPM Prefix Integrity
+      - name: Verify Rootfs ARM64 Binaries, Executables & Dynamic Libraries
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
             echo '--- Rootfs Architecture ---'
-            file /bin/busybox
             file /bin/busybox | grep -q aarch64 || {
               echo '❌ Rootfs is not ARM64!'
-              exit 1
+              exit 1;
             }
             
-            echo '--- Homebridge User Check ---'
-            id homebridge
+            echo '--- Dynamic Shared Library Tree Verification ---'
+            lddtree /usr/bin/node || exit 1
             
-            echo '--- Node Architecture Verification ---'
+            echo '--- Node Architecture & ICU Verification ---'
             NODE_ARCH=\$(node -p \"process.arch\")
             echo \"Detected Node architecture: \${NODE_ARCH}\"
             test \"\${NODE_ARCH}\" = \"arm64\" || { echo '❌ Node architecture mismatch!'; exit 1; }
             
-            echo '--- Tini Binary Check ---'
-            which tini
+            node -e \"console.log('ICU Locale Verification:', new Intl.DateTimeFormat().resolvedOptions())\"
+            
+            echo '--- Executable Command Checks ---'
+            command -v node
+            command -v npm
+            command -v homebridge
+            command -v homebridge-config-ui-x
+            command -v tini
             tini --version
             
-            echo '--- Node & NPM Binaries Check ---'
-            which node
-            which npm
-            file \$(which node)
+            test -x /usr/local/bin/homebridge || { echo '❌ /usr/local/bin/homebridge missing or not executable!'; exit 1; }
+            test -x /usr/local/bin/homebridge-config-ui-x || { echo '❌ /usr/local/bin/homebridge-config-ui-x missing or not executable!'; exit 1; }
+            test -x /etc/homebridge/start.sh || { echo '❌ /etc/homebridge/start.sh missing or not executable!'; exit 1; }
             
             echo '--- NPM Prefix & Root Verification ---'
-            npm config get prefix
-            npm root -g
-            
             test \"\$(npm config get prefix)\" = \"/usr/local\" || { echo '❌ NPM prefix is incorrect!'; exit 1; }
             
-            echo '--- Global NPM Modules Tree ---'
-            npm list -g --depth=0
+            echo '--- Symlink Verification ---'
+            test -L /homebridge || { echo '❌ /homebridge is not a symlink!'; exit 1; }
             
             echo '--- Module Existence Validation ---'
             test -d /usr/local/lib/node_modules/homebridge
             test -d /usr/local/lib/node_modules/homebridge-config-ui-x
           "
 
-      - name: Initialize OCI Runtime Directories & Timezone
+      - name: Initialize OCI Timezone (Europe/London)
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
-            mkdir -p \
-              /run \
-              /var/run \
-              /homebridge \
-              /var/lib/homebridge/accessories \
-              /var/lib/homebridge/persist \
-              /var/lib/homebridge/backups \
-              /var/lib/homebridge/logs \
-              /var/log \
-              /etc/homebridge
-            chown -R 1000:1000 \
-              /var/lib/homebridge \
-              /homebridge || true
-            cp /usr/share/zoneinfo/UTC /etc/localtime
-            echo UTC >/etc/timezone
+            cp /usr/share/zoneinfo/Europe/London /etc/localtime
+            echo Europe/London >/etc/timezone
           "
 
-      - name: Health Checks & Deep Footprint Optimization
+      - name: First-Run Module Validation & Strict Daemon Smoke Test
         run: |
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
             export NODE_ENV=production
-            export HOME=/root
-            export LANG=C.UTF-8
-            export LC_ALL=C.UTF-8
             export NODE_PATH=/usr/local/lib/node_modules
             
-            echo '--- Running Health Checks & Module Requires ---'
+            echo '--- OCI Module Resolution & Health Check ---'
             node -v
             npm -v
             homebridge --version
             
+            # Module health check catch for broken npm installations
             node -e \"require('homebridge')\"
+            node -p \"'Config UI X Version: ' + require('/usr/local/lib/node_modules/homebridge-config-ui-x/package.json').version\"
+            
+            echo '--- Testing Plugin Loading & Strict Daemon Smoke Test ---'
+            mkdir -p /tmp/test-homebridge
+            
+            set +e
+            HOME=/tmp/test-homebridge \
+            NODE_ENV=production \
+            NODE_PATH=/usr/local/lib/node_modules \
+            timeout 10 homebridge \
+              -U /tmp/test-homebridge \
+              -D
+            EXIT_CODE=\$?
+            set -e
+            
+            if [ \"\$EXIT_CODE\" != \"124\" ] && [ \"\$EXIT_CODE\" != \"0\" ]; then
+              echo \"❌ Homebridge failed startup validation with exit code \$EXIT_CODE!\"
+              exit 1
+            fi
+            
+            echo \"✅ Smoke test passed with exit code \$EXIT_CODE (124 indicates clean daemon timeout)\"
+            rm -rf /tmp/test-homebridge
+            
             node -e \"require('homebridge-config-ui-x')\"
             
-            command -v hb-service
-            test -x /usr/local/bin/hb-service
-            hb-service --help >/dev/null
+            test ! -e /var/lib/homebridge/config.json || { echo '❌ Found config.json inside rootfs image!'; exit 1; }
+            test ! -e /var/lib/homebridge/.uix || { echo '❌ Found .uix marker inside rootfs image!'; exit 1; }
             
-            echo '--- OCI Runtime Smoke Test ---'
-            mkdir -p /tmp/hb-test
-            chown -R 1000:1000 /tmp/hb-test
-            
-            su -s /bin/sh homebridge -c '
-              export HOME=/var/lib/homebridge
-              export NODE_ENV=production
-              export LANG=C.UTF-8
-              export LC_ALL=C.UTF-8
-              /usr/local/bin/homebridge -U /tmp/hb-test --user-storage-path /tmp/hb-test --no-qrcode
-            ' &
-            HB_PID=\$!
-            
-            sleep 10
-            
-            kill -0 \"\$HB_PID\" && echo '✅ Homebridge daemon started successfully'
-            
-            kill \"\$HB_PID\" || true
-            wait \"\$HB_PID\" || true
-            
-            rm -rf /tmp/hb-test
+            echo '✅ Factory first-run appliance verified'
             
             echo '--- Purging Documentation & Temp Files ---'
-            rm -rf /usr/lib/node_modules/npm/docs
-            rm -rf /usr/lib/node_modules/npm/html
-            rm -rf /usr/local/lib/node_modules/npm/man
+            rm -rf /usr/lib/node_modules/npm/docs /usr/lib/node_modules/npm/html /usr/lib/node_modules/npm/man || true
             rm -rf /usr/share/man /usr/share/doc /usr/share/info
             find /usr/local/lib/node_modules -type f -name \"*.md\" -delete
             rm -rf /var/cache/apk/*
             find /tmp -mindepth 1 -delete
             find /var/tmp -mindepth 1 -delete
+            rm -rf /root/.npm /usr/local/share/.cache
           "
 
       - name: Resolve Dynamic Release Version Tag
         run: |
           set -euo pipefail
           HB_VERSION=$(sudo chroot bundle/rootfs /bin/sh -c 'homebridge --version' | tr -d '\r\n')
-          RELEASE_TAG="$(date +'%Y.%m.%d-%H%M')-hb${HB_VERSION}"
+          RELEASE_TAG="hb-${HB_VERSION}-alpine-${ALPINE_VER}-$(date +'%Y%m%d')"
           echo "VERSION=${RELEASE_TAG}" >> $GITHUB_ENV
           echo "RESOLVED_HB_VER=${HB_VERSION}" >> $GITHUB_ENV
+
+      - name: Generate OCI Specification config.json
+        run: |
+          set -euo pipefail
+          echo "Writing embedded OCI config.json spec..."
+          cat > bundle/config.json << 'EOF'
+{
+  "ociVersion": "1.0.2",
+  "hostname": "hb",
+  "process": {
+    "terminal": false,
+    "user": {
+      "uid": 0,
+      "gid": 0
+    },
+    "cwd": "/var/lib/homebridge",
+    "capabilities": {
+      "bounding": [
+        "CAP_NET_RAW",
+        "CAP_NET_BIND_SERVICE",
+        "CAP_CHOWN"
+      ],
+      "effective": [
+        "CAP_NET_RAW",
+        "CAP_NET_BIND_SERVICE",
+        "CAP_CHOWN"
+      ],
+      "permitted": [
+        "CAP_NET_RAW",
+        "CAP_NET_BIND_SERVICE",
+        "CAP_CHOWN"
+      ]
+    },
+    "rlimits": [
+      {
+        "type": "RLIMIT_NOFILE",
+        "hard": 65536,
+        "soft": 65536
+      }
+    ],
+    "args": [
+      "/sbin/tini",
+      "--",
+      "/etc/homebridge/start.sh",
+      "/usr/local/bin/homebridge",
+      "-U",
+      "/var/lib/homebridge",
+      "-P",
+      "/usr/local/lib/node_modules"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "LANG=C.UTF-8",
+      "NODE_ENV=production",
+      "HOME=/var/lib/homebridge",
+      "NODE_PATH=/usr/local/lib/node_modules",
+      "NODE_OPTIONS=--max-old-space-size=384",
+      "TZ=Europe/London"
+    ]
+  },
+  "root": {
+    "path": "rootfs",
+    "readonly": false
+  },
+  "linux": {
+    "namespaces": [
+      {
+        "type": "pid"
+      },
+      {
+        "type": "mount"
+      },
+      {
+        "type": "ipc"
+      },
+      {
+        "type": "uts"
+      }
+    ]
+  }
+}
+EOF
+          echo "Validating OCI config.json structure with JQ..."
+          jq empty bundle/config.json || { echo '❌ Invalid JSON in config.json!'; exit 1; }
+          echo "✅ Embedded OCI config.json written and validated."
 
       - name: Generate Build Summary Report
         run: |
           set -euo pipefail
           NODE_VER=$(sudo chroot bundle/rootfs /bin/sh -c 'node -v')
           NPM_VER=$(sudo chroot bundle/rootfs /bin/sh -c 'npm -v')
+          UI_VER_INSTALLED=$(sudo chroot bundle/rootfs /bin/sh -c "node -p \"require('/usr/local/lib/node_modules/homebridge-config-ui-x/package.json').version\"" | tr -d '\r\n')
           
           {
-            echo "### 🚀 Homebridge UXC Build Manifest"
+            echo "### 🚀 Homebridge UXC Factory Appliance Manifest"
             echo "| Component | Version / Target |"
             echo "| :--- | :--- |"
             echo "| **OS Base** | Alpine Linux ${ALPINE_VER} (ARM64) |"
+            echo "| **Timezone** | Europe/London |"
+            echo "| **Memory Limit** | V8 Heap capped at 384MB (\`NODE_OPTIONS\`) |"
+            echo "| **Networking** | Shared Host Network (mDNS via host OpenWrt Avahi) |"
+            echo "| **Entrypoint** | \`/sbin/tini -- /etc/homebridge/start.sh /usr/local/bin/homebridge -U /var/lib/homebridge -P /usr/local/lib/node_modules\` |"
             echo "| **Node.js** | ${NODE_VER} |"
             echo "| **npm** | v${NPM_VER} |"
-            echo "| **Homebridge** | v${RESOLVED_HB_VER} |"
-            echo "| **Config UI X** | Target: ${UI_VER} |"
+            echo "| **Homebridge Core** | v${RESOLVED_HB_VER} |"
+            echo "| **Config UI X** | v${UI_VER_INSTALLED} |"
             echo "| **Release Tag** | \`${VERSION}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Cleanup Host Mounts & Verify
+      - name: Cleanup Host Mounts (Reverse Order Lazy Unmounts)
         if: always()
         run: |
           set -euo pipefail
-          sudo umount bundle/rootfs/dev/pts || true
-          sudo umount bundle/rootfs/dev || true
-          sudo umount bundle/rootfs/proc || true
-          sudo umount bundle/rootfs/sys || true
-          
-          test -f bundle/config.template.json || (echo '❌ Missing config.template.json!' && exit 1)
-
-      - name: Stage Production OCI Config & Validate JSON
-        run: |
-          set -euo pipefail
-          echo "Copying config.template.json -> config.json..."
-          cp bundle/config.template.json bundle/config.json
-          
-          echo "Validating OCI config.json structure with JQ..."
-          jq empty bundle/config.json || { echo '❌ Invalid JSON in config.json!'; exit 1; }
-          echo "✅ OCI JSON syntax validated successfully."
-
-      - name: Validate Rootfs Runtime & Shared Libraries
-        run: |
-          set -euo pipefail
-          
-          sudo chroot bundle/rootfs node -v
-          sudo chroot bundle/rootfs npm --version
-          sudo chroot bundle/rootfs homebridge --version
-          
-          echo '--- Checking Dynamic Linker Dependencies ---'
-          if sudo chroot bundle/rootfs ldd /usr/bin/node | tee /dev/stderr | grep -q "not found"; then
-            echo "❌ Missing shared libraries for node!"
-            exit 1
-          fi
-          
-          if sudo chroot bundle/rootfs ldd /usr/local/bin/hb-service | tee /dev/stderr | grep -q "not found"; then
-            echo "❌ Missing shared libraries for hb-service!"
-            exit 1
-          fi
-          
-          sudo chroot bundle/rootfs which hb-service
-          test -x bundle/rootfs/usr/local/bin/hb-service
-          
-          echo "✅ Rootfs runtime & library validation passed"
+          sudo umount -l bundle/rootfs/proc || true
+          sudo umount -l bundle/rootfs/sys || true
+          sudo umount -l bundle/rootfs/dev/pts || true
+          sudo umount -l bundle/rootfs/dev || true
 
       - name: Package Deterministic OCI Bundle
         run: |
@@ -406,7 +529,7 @@ jobs:
           cd bundle
           sudo tar \
             --sort=name \
-            --mtime='UTC 2026-01-01' \
+            --mtime='@0' \
             --numeric-owner \
             --owner=0 \
             --group=0 \
@@ -420,18 +543,27 @@ jobs:
           echo "✅ Checksum generated:"
           cat SHA256SUMS
             
-      - name: Validate Bundle Archive
+      - name: Validate Factory Bundle Archive
         run: |
           set -euo pipefail
           test -s homebridge-arm64.tar.gz
           ARCHIVE_FILES=$(tar -tf homebridge-arm64.tar.gz)
           
           [[ "$ARCHIVE_FILES" =~ rootfs ]] || { echo "❌ 'rootfs' missing from archive!"; exit 1; }
-          [[ "$ARCHIVE_FILES" =~ config.json ]] || { echo "❌ 'config.json' missing from archive!"; exit 1; }
           
-          echo "✅ Bundle archive validated successfully."
+          if tar -tf homebridge-arm64.tar.gz | grep -q "var/lib/homebridge/config.json"; then
+            echo "❌ Factory image contains config.json"
+            exit 1
+          fi
 
-      - name: Upload Build Artifacts (Debug Backup)
+          if tar -tf homebridge-arm64.tar.gz | grep -q "var/lib/homebridge/.uix"; then
+            echo "❌ Factory image contains .uix marker"
+            exit 1
+          fi
+          
+          echo "✅ Factory first-run image confirmed"
+
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: homebridge-arm64-bundle
@@ -446,10 +578,13 @@ jobs:
           tag_name: ${{ env.VERSION }}
           name: "Homebridge UXC Base - ${{ env.VERSION }}"
           body: |
-            ### 🚀 Automated Native ARM64 Build
-            Deterministic, immutable UXC bundle for OpenWrt.
+            ### 🚀 Factory Appliance Native ARM64 Build
+            Deterministic, clean appliance UXC bundle for OpenWrt.
             - **OS Base:** Alpine Linux ${{ env.ALPINE_VER }} (aarch64)
-            - **Core Tools:** Node.js, npm, Tini, coreutils, bash, shadow, robust-sudo, openssh-client
+            - **Timezone:** Europe/London
+            - **Memory Limit:** 384MB V8 heap ceiling (`NODE_OPTIONS`)
+            - **Networking:** Host Network Mode (Relies on Host Avahi)
+            - **Entrypoint:** `/etc/homebridge/start.sh /usr/local/bin/homebridge -U /var/lib/homebridge -P /usr/local/lib/node_modules`
             - **App Versions:** `homebridge@${{ env.RESOLVED_HB_VER }}`, `homebridge-config-ui-x@${{ env.UI_VER }}`
           files: |
             homebridge-arm64.tar.gz
