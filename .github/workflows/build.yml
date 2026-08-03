@@ -20,9 +20,8 @@ jobs:
 
       - name: Install umoci
         run: |
-          wget -O umoci.tar.gz \
-            https://github.com/opencontainers/umoci/releases/latest/download/umoci.amd64.tar.gz
-          tar -xzf umoci.tar.gz
+          wget -O umoci \
+            https://github.com/opencontainers/umoci/releases/latest/download/umoci.linux.amd64
           sudo mv umoci /usr/local/bin/
           sudo chmod +x /usr/local/bin/umoci
           umoci --version
