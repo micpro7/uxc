@@ -74,7 +74,7 @@ jobs:
       - name: Package UXC Bundle
         run: |
           tar \
-            -czvf homebridge-uxc-arm64.tar.gz \
+            -czvf homebridge-arm64.tar.gz \
             -C bundle \
             config.json \
             rootfs
@@ -82,5 +82,15 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: homebridge-uxc-arm64
-          path: homebridge-uxc-arm64.tar.gz
+          name: homebridge-arm64
+          path: homebridge-arm64.tar.gz
+
+      - name: Create Release and Upload Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "Homebridge UXC ARM64 v1.0.${{ github.run_number }}"
+          files: homebridge-arm64.tar.gz
+          body: "Automated OCI runtime bundle for Homebridge ARM64 tailored for UXC on OpenWrt."
+          draft: false
+          prerelease: false
