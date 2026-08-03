@@ -324,8 +324,7 @@ jobs:
           sudo chroot bundle/rootfs /bin/sh -c '
             set -x
             file /bin/busybox | grep -q aarch64 || { echo "❌ Rootfs is not ARM64!"; exit 1; }
-            which lddtree || apk add --no-cache pax-utils
-            lddtree /usr/bin/node || exit 1
+            ldd /usr/bin/node || exit 1
             NODE_ARCH=$(node -p "process.arch")
             test "${NODE_ARCH}" = "arm64" || { echo "❌ Node architecture mismatch!"; exit 1; }
             command -v node
