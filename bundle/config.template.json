@@ -1,31 +1,56 @@
 {
   "ociVersion": "1.0.2",
+  "hostname": "hb",
   "process": {
     "terminal": false,
     "user": {
-      "uid": 1000,
-      "gid": 1000
+      "uid": 0,
+      "gid": 0
     },
     "cwd": "/var/lib/homebridge",
+    "capabilities": {
+      "bounding": [
+        "CAP_NET_RAW",
+        "CAP_NET_BIND_SERVICE"
+      ],
+      "effective": [
+        "CAP_NET_RAW",
+        "CAP_NET_BIND_SERVICE"
+      ],
+      "permitted": [
+        "CAP_NET_RAW",
+        "CAP_NET_BIND_SERVICE"
+      ]
+    },
+    "rlimits": [
+      {
+        "type": "RLIMIT_NOFILE",
+        "hard": 65536,
+        "soft": 65536
+      }
+    ],
     "args": [
       "/sbin/tini",
       "--",
+      "/etc/homebridge/start.sh",
       "/usr/local/bin/homebridge",
       "-U",
-      "/var/lib/homebridge"
+      "/var/lib/homebridge",
+      "-P",
+      "/usr/local/lib/node_modules"
     ],
     "env": [
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "NODE_ENV=production",
-      "HOME=/var/lib/homebridge",
-      "USER=homebridge",
-      "TZ=Europe/London",
       "LANG=C.UTF-8",
       "LC_ALL=C.UTF-8",
       "TERM=xterm-256color",
-      "MDNS_INTERFACE=br-lan",
-      "NODE_OPTIONS=--max-old-space-size=256",
+      "NODE_ENV=production",
+      "HOME=/var/lib/homebridge",
+      "NODE_PATH=/usr/local/lib/node_modules",
+      "NODE_OPTIONS=--max-old-space-size=384",
       "UV_THREADPOOL_SIZE=4",
+      "TZ=Europe/London",
+      "MDNS_INTERFACE=br-lan",
       "HOMEBRIDGE_IP=0.0.0.0",
       "HOMEBRIDGE_CONFIG_UI_HOST=0.0.0.0"
     ],
@@ -38,11 +63,18 @@
   "mounts": [],
   "linux": {
     "namespaces": [
-      { "type": "pid" },
-      { "type": "network" },
-      { "type": "ipc" },
-      { "type": "uts" },
-      { "type": "mount" }
+      {
+        "type": "pid"
+      },
+      {
+        "type": "mount"
+      },
+      {
+        "type": "ipc"
+      },
+      {
+        "type": "uts"
+      }
     ]
   }
 }
