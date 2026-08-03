@@ -31,7 +31,7 @@ concurrency:
 jobs:
   build-release:
     name: Compile ARM64 Rootfs & Publish
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     
     steps:
       - name: Checkout Repository
@@ -39,10 +39,13 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Verify Runner Architecture
         run: |
           set -euo pipefail
-          test "$(uname -m)" = "aarch64" || { echo "❌ Runner architecture is not aarch64!"; exit 1; }
+          uname -m
 
       - name: Resolve Environment Versions
         id: versions
@@ -81,17 +84,14 @@ jobs:
         run: |
           set -euo pipefail
           
-          # 1. Ensure /dev/shm and /dev/pts exist prior to mounting pseudo-filesystems
           sudo mkdir -p bundle/rootfs/dev/shm
           sudo mkdir -p bundle/rootfs/dev/pts
 
-          # 2. Mount pseudo-filesystems safely using rbind/bind to prevent runner restrictions
           sudo mount --bind /dev bundle/rootfs/dev
           sudo mount --bind /dev/pts bundle/rootfs/dev/pts
           sudo mount -t proc proc bundle/rootfs/proc
           sudo mount --rbind /sys bundle/rootfs/sys
           
-          # 3. Copy DNS configuration post-mount for reliable build resolution
           sudo cp /etc/resolv.conf bundle/rootfs/etc/resolv.conf
 
       - name: Install System Dependencies & Build Tools
@@ -109,10 +109,10 @@ EOF
             
             apk add --no-cache \
               coreutils \
-              nodejs-current \
+              nodejs \
               npm \
-              shadow \
               tini \
+              sudo \
               curl \
               jq \
               tzdata \
@@ -150,6 +150,7 @@ EOF
             
             update-ca-certificates
             dbus-uuidgen --ensure=/etc/machine-id
+            adduser -D -H -u 1000 homebridge || true
           '
 
       - name: Install Homebridge Core & UI + Bin Symlinks
@@ -193,17 +194,20 @@ EOF
               /usr/local/lib/node_modules \
               /usr/lib/node_modules \
               /etc/homebridge \
-              /var/lib/homebridge \
-              /var/lib/homebridge/node_modules \
-              /var/lib/homebridge/accessories \
-              /var/lib/homebridge/persist \
-              /var/lib/homebridge/backups \
-              /var/lib/homebridge/logs \
+              /etc/sudoers.d \
+              /homebridge \
+              /homebridge/accessories \
+              /homebridge/persist \
+              /homebridge/backups \
+              /homebridge/logs \
               /run \
               /var/run \
               /var/log \
               /run/dbus \
-              /run/avahi-daemon
+              /var/run/dbus \
+              /var/lib/dbus \
+              /run/avahi-daemon \
+              /var/run/avahi-daemon
 
             echo "homebridge" > /etc/hostname
 
@@ -212,12 +216,12 @@ EOF
 ::1 localhost
 EOF
 
-            chown -R root:root /var/lib/homebridge
-            chmod 775 /var/lib/homebridge
-            chmod 775 /var/lib/homebridge/node_modules
+            cat > /etc/sudoers.d/homebridge <<EOF
+root ALL=(ALL) NOPASSWD: ALL
+EOF
+            chmod 440 /etc/sudoers.d/homebridge
 
-            rm -rf /homebridge
-            ln -s /var/lib/homebridge /homebridge
+            chmod 775 /homebridge
 
             cat > /etc/homebridge/default-config.json <<EOF
 {
@@ -234,7 +238,7 @@ EOF
       "name": "Config",
       "port": 8581,
       "auth": "form",
-      "sudo": false
+      "sudo": true
     }
   ]
 }
@@ -245,58 +249,64 @@ EOF
 set -e
 
 mkdir -p \
-  /var/lib/homebridge \
-  /var/lib/homebridge/node_modules \
-  /var/lib/homebridge/logs \
-  /var/lib/homebridge/accessories \
-  /var/lib/homebridge/persist \
-  /var/lib/homebridge/backups \
+  /homebridge \
+  /homebridge/logs \
+  /homebridge/accessories \
+  /homebridge/persist \
+  /homebridge/backups \
   /run/dbus \
-  /run/avahi-daemon
+  /var/run/dbus \
+  /var/lib/dbus \
+  /run/avahi-daemon \
+  /var/run/avahi-daemon
 
-touch /var/lib/homebridge/logs/homebridge.log
+touch /homebridge/logs/homebridge.log
 
 TARGET_UID="${HB_UID:-0}"
 TARGET_GID="${HB_GID:-0}"
 
-if [ "$(id -u)" = "0" ]; then
-    chown -R "${TARGET_UID}:${TARGET_GID}" /var/lib/homebridge
+if [ "$(id -u)" = "0" ] && [ -f /homebridge/config.json ]; then
+    chown "${TARGET_UID}:${TARGET_GID}" /homebridge/config.json 2>/dev/null || true
 fi
 
 chmod 775 \
-  /var/lib/homebridge \
-  /var/lib/homebridge/node_modules \
-  /var/lib/homebridge/logs \
-  /var/lib/homebridge/accessories \
-  /var/lib/homebridge/persist \
-  /var/lib/homebridge/backups
+  /homebridge \
+  /homebridge/logs \
+  /homebridge/accessories \
+  /homebridge/persist \
+  /homebridge/backups
 
-chmod 644 /var/lib/homebridge/logs/homebridge.log
+chmod 644 /homebridge/logs/homebridge.log
 
-if [ ! -f /var/lib/homebridge/.initialized ]; then
+if [ ! -f /homebridge/.initialized ]; then
     echo "Initializing default config.json for Config UI X..."
-    if [ ! -f /var/lib/homebridge/config.json ]; then
-        cp /etc/homebridge/default-config.json /var/lib/homebridge/config.json
+    if [ ! -f /homebridge/config.json ]; then
+        cp /etc/homebridge/default-config.json /homebridge/config.json
     fi
-    chmod 600 /var/lib/homebridge/config.json
-    chown "${TARGET_UID}:${TARGET_GID}" /var/lib/homebridge/config.json
-    touch /var/lib/homebridge/.initialized
+    chmod 600 /homebridge/config.json
+    if [ "$(id -u)" = "0" ]; then
+        chown "${TARGET_UID}:${TARGET_GID}" /homebridge/config.json 2>/dev/null || true
+    fi
+    touch /homebridge/.initialized
+fi
+
+if command -v dbus-daemon >/dev/null; then
+    dbus-daemon --system --fork || true
+fi
+
+if command -v avahi-daemon >/dev/null; then
+    avahi-daemon \
+        --no-chroot \
+        -D || true
 fi
 
 export NODE_PATH=/usr/local/lib/node_modules
-export HOME=/var/lib/homebridge
+export HOME=/homebridge
 
 exec "$@"
 EOF
             chmod +x /etc/homebridge/start.sh
             /bin/sh -n /etc/homebridge/start.sh
-
-            cat > /usr/bin/sudo <<'EOF'
-#!/bin/sh
-exec "$@"
-EOF
-            chmod +x /usr/bin/sudo
-            ln -sf /usr/bin/sudo /bin/sudo
           '
 
       - name: Purge Heavy Build Dependencies & Clean Cache
@@ -321,11 +331,13 @@ EOF
             command -v node
             command -v npm
             command -v homebridge
+            command -v tini
+            command -v sudo
+            sudo -V >/dev/null
             homebridge -V
             node -v
             npm -v
             test -d /usr/local/lib/node_modules/homebridge-config-ui-x || { echo '❌ Config UI X module missing!'; exit 1; }
-            command -v tini
             test -x /usr/local/bin/homebridge || exit 1
             test -x /etc/homebridge/start.sh || exit 1
           "
@@ -377,7 +389,7 @@ EOF
       - name: Resolve Dynamic Release Version Tag
         run: |
           set -euo pipefail
-          HB_VERSION=$(sudo chroot bundle/rootfs /bin/sh -c 'homebridge --version' | tr -d '\r\n')
+          HB_VERSION=$(sudo chroot bundle/rootfs /bin/sh -c 'homebridge --version' | tr -d 'v\r\n')
           RELEASE_TAG="hb-${HB_VERSION}-alpine-${ALPINE_VER}-$(date +'%Y%m%d-%H%M')"
           echo "VERSION=${RELEASE_TAG}" >> $GITHUB_ENV
           echo "RESOLVED_HB_VER=${HB_VERSION}" >> $GITHUB_ENV
@@ -389,28 +401,31 @@ EOF
 {
   "ociVersion": "1.0.2",
   "hostname": "homebridge",
+  "annotations": {
+    "org.opencontainers.image.title": "Homebridge UXC ARM64",
+    "io.homebridge.storage-path": "/homebridge",
+    "io.homebridge.plugin-path": "/usr/local/lib/node_modules",
+    "io.container.network": "host"
+  },
   "process": {
     "terminal": false,
     "user": {
       "uid": 0,
       "gid": 0
     },
-    "cwd": "/var/lib/homebridge",
+    "cwd": "/homebridge",
     "capabilities": {
       "bounding": [
         "CAP_NET_RAW",
-        "CAP_NET_BIND_SERVICE",
-        "CAP_CHOWN"
+        "CAP_NET_BIND_SERVICE"
       ],
       "effective": [
         "CAP_NET_RAW",
-        "CAP_NET_BIND_SERVICE",
-        "CAP_CHOWN"
+        "CAP_NET_BIND_SERVICE"
       ],
       "permitted": [
         "CAP_NET_RAW",
-        "CAP_NET_BIND_SERVICE",
-        "CAP_CHOWN"
+        "CAP_NET_BIND_SERVICE"
       ]
     },
     "rlimits": [
@@ -426,7 +441,7 @@ EOF
       "/etc/homebridge/start.sh",
       "/usr/local/bin/homebridge",
       "-U",
-      "/var/lib/homebridge",
+      "/homebridge",
       "-P",
       "/usr/local/lib/node_modules"
     ],
@@ -438,7 +453,7 @@ EOF
       "NODE_ENV=production",
       "HB_UID=0",
       "HB_GID=0",
-      "HOME=/var/lib/homebridge",
+      "HOME=/homebridge",
       "NODE_PATH=/usr/local/lib/node_modules",
       "NODE_OPTIONS=--max-old-space-size=320",
       "UV_THREADPOOL_SIZE=4",
