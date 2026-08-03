@@ -121,7 +121,6 @@ jobs:
               eudev-libs \
               libexpat \
               libxml2 \
-              libxcrypt-compat \
               libstdc++ \
               libgcc \
               musl \
