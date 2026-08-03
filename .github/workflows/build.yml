@@ -107,8 +107,6 @@ jobs:
               --repository=https://dl-cdn.alpinelinux.org/alpine/v'"${ALPINE_BRANCH}"'/main \
               --repository=https://dl-cdn.alpinelinux.org/alpine/v'"${ALPINE_BRANCH}"'/community \
               coreutils \
-              nodejs \
-              npm \
               tini \
               sudo \
               curl \
@@ -148,7 +146,27 @@ jobs:
             update-ca-certificates
             dbus-uuidgen --ensure=/etc/machine-id
 
-            adduser -D -H -u 1000 homebridge || true
+            adduser -D -u 1000 -h /home/homebridge -s /bin/sh homebridge || true
+            mkdir -p /home/homebridge
+            chown 1000:1000 /home/homebridge
+          '
+
+      - name: Install Official NodeSource ARM64 Binary
+        run: |
+          set -euo pipefail
+          echo "Downloading and installing official Node.js ARM64 binary..."
+          sudo chroot bundle/rootfs /bin/sh -c '
+            set -eu
+            NODE_VERSION="v24.18.0"
+            ARCH="arm64"
+            
+            curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${ARCH}.tar.xz"
+            tar -xf "node-${NODE_VERSION}-linux-${ARCH}.tar.xz" -C /usr/local --strip-components=1 --no-same-owner
+            rm -f "node-${NODE_VERSION}-linux-${ARCH}.tar.xz"
+            
+            ln -sf /usr/local/bin/node /usr/bin/node
+            ln -sf /usr/local/bin/npm /usr/bin/npm
+            ln -sf /usr/local/bin/npx /usr/bin/npx
           '
 
       - name: Install Homebridge Core & UI + Bin Symlinks
@@ -159,17 +177,20 @@ jobs:
             set -eu
             export NODE_ENV=production
             export HOME=/root
-            export NODE_PATH=/usr/local/lib/node_modules
+            export NODE_PATH=/usr/local/lib/node_modules:/homebridge/node_modules
             export npm_config_cache=/tmp/npm-cache
             npm config set prefix /usr/local
             
             npm install -g \
+              --engine-strict=false \
               --unsafe-perm=true \
               --omit=dev \
               --no-audit \
               --no-fund \
               homebridge@'"${HB_VER}"' \
               homebridge-config-ui-x@'"${UI_VER}"'
+
+            chown -R root:root /usr/local/lib/node_modules
 
             ln -sf /usr/local/bin/homebridge /usr/bin/homebridge || true
             ln -sf /usr/local/bin/homebridge-config-ui-x /usr/bin/homebridge-config-ui-x || true
@@ -192,8 +213,10 @@ jobs:
               /usr/local/lib/node_modules \
               /usr/lib/node_modules \
               /etc/homebridge \
+              /etc/avahi \
               /etc/sudoers.d \
               /homebridge \
+              /homebridge/node_modules \
               /homebridge/accessories \
               /homebridge/persist \
               /homebridge/backups \
@@ -214,13 +237,30 @@ jobs:
             ::1 localhost
             EOF
 
+            cat << '\''EOF'\'' > /etc/nsswitch.conf
+            hosts: files mdns4_minimal [NOTFOUND=return] dns mdns4
+            EOF
+
             cat << '\''EOF'\'' > /etc/sudoers.d/homebridge
-            root ALL=(ALL) NOPASSWD: ALL
             homebridge ALL=(ALL) NOPASSWD: ALL
             EOF
             chmod 440 /etc/sudoers.d/homebridge
 
+            chown -R 1000:1000 /homebridge
             chmod 775 /homebridge
+
+            cat << '\''EOF'\'' > /etc/avahi/avahi-daemon.conf
+            [server]
+            host-name=homebridge
+            use-ipv4=yes
+            use-ipv6=yes
+            allow-interfaces=br-lan
+
+            [publish]
+            publish-addresses=yes
+            publish-hinfo=no
+            publish-workstation=no
+            EOF
 
             cat << '\''EOF'\'' > /etc/homebridge/default-config.json
             {
@@ -236,6 +276,7 @@ jobs:
                   "platform": "config",
                   "name": "Config",
                   "port": 8581,
+                  "host": "0.0.0.0",
                   "auth": "form",
                   "sudo": true
                 }
@@ -249,6 +290,7 @@ jobs:
 
             mkdir -p \
               /homebridge \
+              /homebridge/node_modules \
               /homebridge/logs \
               /homebridge/accessories \
               /homebridge/persist \
@@ -261,15 +303,24 @@ jobs:
 
             touch /homebridge/logs/homebridge.log
 
-            TARGET_UID="${HB_UID:-0}"
-            TARGET_GID="${HB_GID:-0}"
+            TARGET_UID="${HB_UID:-1000}"
+            TARGET_GID="${HB_GID:-1000}"
 
             if [ "$(id -u)" = "0" ] && [ -f /homebridge/config.json ]; then
                 chown "${TARGET_UID}:${TARGET_GID}" /homebridge/config.json 2>/dev/null || true
             fi
 
+            chown -R "${TARGET_UID}:${TARGET_GID}" \
+              /homebridge \
+              /homebridge/node_modules \
+              /homebridge/logs \
+              /homebridge/accessories \
+              /homebridge/persist \
+              /homebridge/backups 2>/dev/null || true
+
             chmod 775 \
               /homebridge \
+              /homebridge/node_modules \
               /homebridge/logs \
               /homebridge/accessories \
               /homebridge/persist \
@@ -289,20 +340,13 @@ jobs:
                 touch /homebridge/.initialized
             fi
 
-            if command -v dbus-daemon >/dev/null; then
-                dbus-daemon --system --fork || true
-            fi
+            dbus-daemon --system --fork || true
+            avahi-daemon -D || true
 
-            if command -v avahi-daemon >/dev/null; then
-                avahi-daemon \
-                    --no-chroot \
-                    -D || true
-            fi
-
-            export NODE_PATH=/usr/local/lib/node_modules
+            export NODE_PATH=/usr/local/lib/node_modules:/homebridge/node_modules
             export HOME=/homebridge
 
-            exec "$@"
+            exec su-exec "${TARGET_UID}:${TARGET_GID}" "$@"
             EOF
             chmod +x /etc/homebridge/start.sh
             /bin/sh -n /etc/homebridge/start.sh
@@ -313,6 +357,7 @@ jobs:
           set -euo pipefail
           sudo chroot bundle/rootfs /bin/sh -c '
             set -eu
+            apk add --no-cache su-exec
             apk del make g++ git linux-headers || true
             rm -rf /var/cache/apk/*
             apk cache clean 2>/dev/null || true
@@ -332,10 +377,12 @@ jobs:
             command -v homebridge
             command -v tini
             command -v sudo
+            command -v su-exec
             sudo -V >/dev/null
             homebridge -V
             node -v
             npm -v
+            [ "$(npm config get prefix)" = "/usr/local" ] || { echo "❌ npm prefix mismatch!"; exit 1; }
             test -d /usr/local/lib/node_modules/homebridge-config-ui-x || { echo "❌ Config UI X module missing!"; exit 1; }
             test -x /usr/local/bin/homebridge || exit 1
             test -x /etc/homebridge/start.sh || exit 1
@@ -356,14 +403,15 @@ jobs:
           sudo chroot bundle/rootfs /bin/sh -c '
             set -eu
             export NODE_ENV=production
-            export NODE_PATH=/usr/local/lib/node_modules
+            export NODE_PATH=/usr/local/lib/node_modules:/homebridge/node_modules
             node -e "require(\'homebridge\')"
+            node -e "require(\'homebridge-config-ui-x\')"
             
             mkdir -p /tmp/test-homebridge
             set +e
             HOME=/tmp/test-homebridge \
             NODE_ENV=production \
-            NODE_PATH=/usr/local/lib/node_modules \
+            NODE_PATH=/usr/local/lib/node_modules:/homebridge/node_modules \
             timeout 10 homebridge \
               -U /tmp/test-homebridge \
               -D \
@@ -374,7 +422,13 @@ jobs:
             
             [ "$EXIT_CODE" = "124" ] || [ "$EXIT_CODE" = "0" ] || exit 1
             rm -rf /tmp/test-homebridge
-            
+          '
+
+      - name: Clean Documentation Residue Before Packaging
+        run: |
+          set -euo pipefail
+          sudo chroot bundle/rootfs /bin/sh -c '
+            set -eu
             rm -rf /usr/lib/node_modules/npm/docs /usr/lib/node_modules/npm/html /usr/lib/node_modules/npm/man || true
             rm -rf /usr/share/man /usr/share/doc /usr/share/info
             find /usr/local/lib/node_modules -type f -name "*.md" -delete
@@ -403,7 +457,7 @@ jobs:
             "annotations": {
               "org.opencontainers.image.title": "Homebridge UXC ARM64",
               "io.homebridge.storage-path": "/homebridge",
-              "io.homebridge.plugin-path": "/usr/local/lib/node_modules",
+              "io.homebridge.plugin-path": "/usr/local/lib/node_modules,/homebridge/node_modules",
               "io.container.network": "host"
             },
             "process": {
@@ -416,15 +470,21 @@ jobs:
               "capabilities": {
                 "bounding": [
                   "CAP_NET_RAW",
-                  "CAP_NET_BIND_SERVICE"
+                  "CAP_NET_BIND_SERVICE",
+                  "CAP_DAC_OVERRIDE",
+                  "CAP_SYS_ADMIN"
                 ],
                 "effective": [
                   "CAP_NET_RAW",
-                  "CAP_NET_BIND_SERVICE"
+                  "CAP_NET_BIND_SERVICE",
+                  "CAP_DAC_OVERRIDE",
+                  "CAP_SYS_ADMIN"
                 ],
                 "permitted": [
                   "CAP_NET_RAW",
-                  "CAP_NET_BIND_SERVICE"
+                  "CAP_NET_BIND_SERVICE",
+                  "CAP_DAC_OVERRIDE",
+                  "CAP_SYS_ADMIN"
                 ]
               },
               "rlimits": [
@@ -442,7 +502,7 @@ jobs:
                 "-U",
                 "/homebridge",
                 "-P",
-                "/usr/local/lib/node_modules"
+                "/usr/local/lib/node_modules,/homebridge/node_modules"
               ],
               "env": [
                 "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -450,10 +510,10 @@ jobs:
                 "LC_ALL=C.UTF-8",
                 "TERM=xterm-256color",
                 "NODE_ENV=production",
-                "HB_UID=0",
-                "HB_GID=0",
+                "HB_UID=1000",
+                "HB_GID=1000",
                 "HOME=/homebridge",
-                "NODE_PATH=/usr/local/lib/node_modules",
+                "NODE_PATH=/usr/local/lib/node_modules:/homebridge/node_modules",
                 "NODE_OPTIONS=--max-old-space-size=320",
                 "UV_THREADPOOL_SIZE=4",
                 "TZ=Europe/London",
@@ -470,7 +530,44 @@ jobs:
               "path": "rootfs",
               "readonly": false
             },
-            "mounts": [],
+            "mounts": [
+              {
+                "destination": "/dev",
+                "type": "bind",
+                "source": "/dev",
+                "options": [
+                  "rbind",
+                  "rw"
+                ]
+              },
+              {
+                "destination": "/sys",
+                "type": "bind",
+                "source": "/sys",
+                "options": [
+                  "rbind",
+                  "ro"
+                ]
+              },
+              {
+                "destination": "/proc",
+                "type": "bind",
+                "source": "/proc",
+                "options": [
+                  "rbind",
+                  "rw"
+                ]
+              },
+              {
+                "destination": "/run",
+                "type": "bind",
+                "source": "/run",
+                "options": [
+                  "rbind",
+                  "rw"
+                ]
+              }
+            ],
             "linux": {
               "namespaces": [
                 {
