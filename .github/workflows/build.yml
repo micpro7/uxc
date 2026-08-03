@@ -20,9 +20,8 @@ jobs:
 
       - name: Install umoci
         run: |
-          UMOCI_VERSION="v0.4.7"
           wget -O umoci.tar.gz \
-            https://github.com/opencontainers/umoci/releases/download/${UMOCI_VERSION}/umoci.amd64.tar.gz
+            https://github.com/opencontainers/umoci/releases/latest/download/umoci.amd64.tar.gz
           tar -xzf umoci.tar.gz
           sudo mv umoci /usr/local/bin/
           sudo chmod +x /usr/local/bin/umoci
@@ -30,7 +29,6 @@ jobs:
 
       - name: Convert Homebridge ARM64 Image to OCI Layout
         run: |
-          # Using an official stable release tag or a digest for reproducible builds
           HOMEBRIDGE_TAG="latest"
           skopeo copy \
             --override-arch arm64 \
