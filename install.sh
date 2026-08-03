@@ -169,66 +169,82 @@ printf '\n\n\n'
 # ==========================================
 echo "📝 [Phase 5] Injecting master variable matrix via individual JQ splits..."
 
-# Split 1: Update Persistent Storage Path Mount Source
-jq --arg src "$PERSISTENT_DATA_SOURCE" \
-    '.mounts = (.mounts | map(if .destination == "/homebridge" then .source = $src else . end))' \
-    "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
+# Helper function to perform safe JQ transformations with strict error checking
+apply_jq() {
+    local label="$1"
+    shift
+    if ! jq "$@" "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp"; then
+        echo "❌ [ERROR] Failed JQ transformation during: $label" >&2
+        rm -f "$BUNDLE_PATH/config.json.tmp"
+        exit 1
+    fi
+    mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
+}
 
-echo "   ↳ Mount Target bound to: $PERSISTENT_DATA_SOURCE ✅"
+# Split 1: Dynamic Mount Injection Target (/var/lib/homebridge)
+apply_jq "Mount Target Configuration" \
+    --arg src "$PERSISTENT_DATA_SOURCE" \
+    'if (.mounts | map(select(.destination == "/var/lib/homebridge")) | length) > 0 then
+       .mounts |= map(if .destination == "/var/lib/homebridge" then .source = $src else . end)
+     else
+       .mounts += [{"destination": "/var/lib/homebridge", "source": $src, "type": "bind", "options": ["rbind", "rw"]}]
+     end'
+
+echo "   ↳ Mount Target bound to: $PERSISTENT_DATA_SOURCE -> /var/lib/homebridge ✅"
 
 
 # Split 2: Update Timezone (TZ)
-jq --arg tz "TZ=$TIMEZONE" \
-    '.process.env = (.process.env | map(select(startswith("TZ=") | not)) + [$tz])' \
-    "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
+apply_jq "Timezone Configuration" \
+    --arg tz "TZ=$TIMEZONE" \
+    '.process.env = (.process.env | map(select(startswith("TZ=") | not)) + [$tz])'
 
 echo "   ↳ Timezone assigned to: $TIMEZONE ✅"
 
 
 # Split 3: Update MDNS Interface Network Bridge
-jq --arg mdns "MDNS_INTERFACE=$MDNS_NET_INTERFACE" \
-    '.process.env = (.process.env | map(select(startswith("MDNS_INTERFACE=") | not)) + [$mdns])' \
-    "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
+apply_jq "mDNS Interface Configuration" \
+    --arg mdns "MDNS_INTERFACE=$MDNS_NET_INTERFACE" \
+    '.process.env = (.process.env | map(select(startswith("MDNS_INTERFACE=") | not)) + [$mdns])'
 
 echo "   ↳ mDNS broadcast mapped to: $MDNS_NET_INTERFACE ✅"
 
 
 # Split 4: Update Node.js Old Space Memory Constraints
-jq --arg node_opt "NODE_OPTIONS=--max-old-space-size=$NODE_MEMORY_LIMIT" \
-    '.process.env = (.process.env | map(select(startswith("NODE_OPTIONS=") | not)) + [$node_opt])' \
-    "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
+apply_jq "Node Memory Configuration" \
+    --arg node_opt "NODE_OPTIONS=--max-old-space-size=$NODE_MEMORY_LIMIT" \
+    '.process.env = (.process.env | map(select(startswith("NODE_OPTIONS=") | not)) + [$node_opt])'
 
 echo "   ↳ Node engine memory threshold set to: ${NODE_MEMORY_LIMIT}MB ✅"
 
 
 # Split 5: Update Libuv Thread Pool Allocation
-jq --arg threads "UV_THREADPOOL_SIZE=$THREAD_POOL_SIZE" \
-    '.process.env = (.process.env | map(select(startswith("UV_THREADPOOL_SIZE=") | not)) + [$threads])' \
-    "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
+apply_jq "Libuv Thread Pool Configuration" \
+    --arg threads "UV_THREADPOOL_SIZE=$THREAD_POOL_SIZE" \
+    '.process.env = (.process.env | map(select(startswith("UV_THREADPOOL_SIZE=") | not)) + [$threads])'
 
 echo "   ↳ Libuv backend worker threads balanced at: $THREAD_POOL_SIZE ✅"
 
 
 # Split 6: Update Homebridge Binding IP Target
-jq --arg ip "HOMEBRIDGE_IP=$BIND_IP" \
-    '.process.env = (.process.env | map(select(startswith("HOMEBRIDGE_IP=") | not)) + [$ip])' \
-    "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
+apply_jq "Homebridge IP Configuration" \
+    --arg ip "HOMEBRIDGE_IP=$BIND_IP" \
+    '.process.env = (.process.env | map(select(startswith("HOMEBRIDGE_IP=") | not)) + [$ip])'
 
 echo "   ↳ Network socket interface listening on: $BIND_IP ✅"
 
 
 # Split 6b: Update Web UI Binding Host
-jq --arg ui_host "HOMEBRIDGE_CONFIG_UI_HOST=$BIND_IP" \
-    '.process.env = (.process.env | map(select(startswith("HOMEBRIDGE_CONFIG_UI_HOST=") | not)) + [$ui_host])' \
-    "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
+apply_jq "Web UI Host Configuration" \
+    --arg ui_host "HOMEBRIDGE_CONFIG_UI_HOST=$BIND_IP" \
+    '.process.env = (.process.env | map(select(startswith("HOMEBRIDGE_CONFIG_UI_HOST=") | not)) + [$ui_host])'
 
 echo "   ↳ Web UI socket host forced to: $BIND_IP ✅"
 
 
 # Split 7: Toggle Kernel Security Boundaries
-jq --argjson nnp "$NO_NEW_PRIVILEGES" \
-    '.process.noNewPrivileges = $nnp' \
-    "$BUNDLE_PATH/config.json" > "$BUNDLE_PATH/config.json.tmp" && mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
+apply_jq "Kernel Privilege Configuration" \
+    --argjson nnp "$NO_NEW_PRIVILEGES" \
+    '.process.noNewPrivileges = $nnp'
 
 echo "   ↳ Kernel privilege escalation guard: $NO_NEW_PRIVILEGES ✅"
 
