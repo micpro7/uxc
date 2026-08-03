@@ -1,213 +1,40 @@
 {
-  "ociVersion": "1.0.2",
-  "hostname": "homebridge",
-  "annotations": {
-    "org.opencontainers.image.source": "https://github.com/micpro7/uxc",
-    "io.homebridge.plugin-path": "/homebridge/plugins",
-    "io.homebridge.storage-path": "/homebridge"
+  "pkg": {
+    "name": "homebridge-arm64",
+    "version": "latest",
+    "description": "Native ARM64 Homebridge OCI bundle for OpenWrt UXC",
+    "arch": "aarch64"
   },
-  "process": {
-    "terminal": false,
-    "user": {
-      "uid": 0,
-      "gid": 0
-    },
-    "args": [
-      "/sbin/tini",
-      "--",
-      "/usr/local/bin/hb-service",
-      "run",
-      "--allow-root",
-      "-U",
-      "/homebridge"
-    ],
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "HOME=/homebridge",
-      "TERM=xterm",
-      "NODE_ENV=production",
-      "npm_config_update_notifier=false"
-    ],
-    "cwd": "/homebridge",
-    "capabilities": {
-      "bounding": [
-        "CAP_CHOWN",
-        "CAP_DAC_OVERRIDE",
-        "CAP_FOWNER",
-        "CAP_FSETID",
-        "CAP_KILL",
-        "CAP_SETGID",
-        "CAP_SETUID",
-        "CAP_NET_BIND_SERVICE",
-        "CAP_NET_RAW",
-        "CAP_SYS_CHROOT"
+  "oci": {
+    "version": "1.0.2",
+    "rootfs": "rootfs",
+    "process": {
+      "terminal": false,
+      "user": {
+        "uid": 1000,
+        "gid": 1000
+      },
+      "cwd": "/var/lib/homebridge",
+      "args": [
+        "/sbin/tini",
+        "--",
+        "/usr/local/bin/homebridge",
+        "-U",
+        "/var/lib/homebridge"
       ],
-      "effective": [
-        "CAP_CHOWN",
-        "CAP_DAC_OVERRIDE",
-        "CAP_FOWNER",
-        "CAP_FSETID",
-        "CAP_KILL",
-        "CAP_SETGID",
-        "CAP_SETUID",
-        "CAP_NET_BIND_SERVICE",
-        "CAP_NET_RAW",
-        "CAP_SYS_CHROOT"
-      ],
-      "inheritable": [
-        "CAP_CHOWN",
-        "CAP_DAC_OVERRIDE",
-        "CAP_FOWNER",
-        "CAP_FSETID",
-        "CAP_KILL",
-        "CAP_SETGID",
-        "CAP_SETUID",
-        "CAP_NET_BIND_SERVICE",
-        "CAP_NET_RAW",
-        "CAP_SYS_CHROOT"
-      ],
-      "permitted": [
-        "CAP_CHOWN",
-        "CAP_DAC_OVERRIDE",
-        "CAP_FOWNER",
-        "CAP_FSETID",
-        "CAP_KILL",
-        "CAP_SETGID",
-        "CAP_SETUID",
-        "CAP_NET_BIND_SERVICE",
-        "CAP_NET_RAW",
-        "CAP_SYS_CHROOT"
-      ],
-      "ambient": []
-    },
-    "rlimits": [
-      {
-        "type": "RLIMIT_NOFILE",
-        "hard": 65536,
-        "soft": 65536
-      }
-    ],
-    "noNewPrivileges": true
-  },
-  "root": {
-    "path": "rootfs",
-    "readonly": true
-  },
-  "mounts": [
-    {
-      "destination": "/proc",
-      "type": "proc",
-      "source": "proc"
-    },
-    {
-      "destination": "/dev",
-      "type": "tmpfs",
-      "source": "tmpfs",
-      "options": [
-        "nosuid",
-        "strictatime",
-        "mode=755",
-        "size=65536k"
-      ]
-    },
-    {
-      "destination": "/dev/pts",
-      "type": "devpts",
-      "source": "devpts",
-      "options": [
-        "nosuid",
-        "noexec",
-        "newinstance",
-        "ptmxmode=0666",
-        "mode=0620",
-        "gid=5"
-      ]
-    },
-    {
-      "destination": "/dev/shm",
-      "type": "tmpfs",
-      "source": "shm",
-      "options": [
-        "nosuid",
-        "noexec",
-        "nodev",
-        "mode=1777",
-        "size=128m"
-      ]
-    },
-    {
-      "destination": "/tmp",
-      "type": "tmpfs",
-      "source": "tmpfs",
-      "options": [
-        "nosuid",
-        "nodev",
-        "mode=1777"
-      ]
-    },
-    {
-      "destination": "/run",
-      "type": "tmpfs",
-      "source": "tmpfs",
-      "options": [
-        "nosuid",
-        "nodev",
-        "mode=755"
-      ]
-    },
-    {
-      "destination": "/homebridge",
-      "type": "none",
-      "source": "/mnt/X6/UXC/homebridge/data",
-      "options": [
-        "rbind",
-        "rw"
-      ]
-    },
-    {
-      "destination": "/etc/resolv.conf",
-      "type": "none",
-      "source": "/etc/resolv.conf",
-      "options": [
-        "rbind",
-        "ro"
+      "env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "NODE_ENV=production",
+        "HOME=/var/lib/homebridge",
+        "USER=homebridge",
+        "TZ=UTC",
+        "LANG=C.UTF-8",
+        "LC_ALL=C.UTF-8",
+        "TERM=xterm-256color",
+        "npm_config_update_notifier=false",
+        "npm_config_fund=false",
+        "npm_config_audit=false"
       ]
     }
-  ],
-  "linux": {
-    "namespaces": [
-      {
-        "type": "pid"
-      },
-      {
-        "type": "ipc"
-      },
-      {
-        "type": "uts"
-      },
-      {
-        "type": "mount"
-      },
-      {
-        "type": "cgroup"
-      }
-    ],
-    "maskedPaths": [
-      "/proc/kcore",
-      "/proc/keys",
-      "/proc/latency_stats",
-      "/proc/timer_list",
-      "/proc/timer_stats",
-      "/proc/sched_debug",
-      "/sys/firmware"
-    ],
-    "readonlyPaths": [
-      "/proc/asound",
-      "/proc/bus",
-      "/proc/fs",
-      "/proc/irq",
-      "/proc/sys",
-      "/proc/sysrq-trigger"
-    ]
   }
 }
