@@ -97,16 +97,17 @@ jobs:
       - name: Install System Dependencies & Build Tools
         run: |
           set -euo pipefail
-          sudo chroot bundle/rootfs /bin/sh -c '
+
+          sudo chroot bundle/rootfs /bin/sh -c "
             set -eu
-            
+
             cat > /etc/apk/repositories <<EOF
-https://dl-cdn.alpinelinux.org/alpine/v'"${ALPINE_BRANCH}"'/main
-https://dl-cdn.alpinelinux.org/alpine/v'"${ALPINE_BRANCH}"'/community
+https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_BRANCH}/main
+https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_BRANCH}/community
 EOF
-            
+
             apk update
-            
+
             apk add --no-cache \
               coreutils \
               nodejs \
@@ -147,11 +148,12 @@ EOF
               dbus \
               dbus-libs \
               libdaemon
-            
+
             update-ca-certificates
             dbus-uuidgen --ensure=/etc/machine-id
+
             adduser -D -H -u 1000 homebridge || true
-          '
+          "
 
       - name: Install Homebridge Core & UI + Bin Symlinks
         run: |
@@ -189,7 +191,7 @@ EOF
       - name: Inject System Directories, Symlinks & Init Scripts
         run: |
           set -euo pipefail
-          sudo chroot bundle/rootfs /bin/sh -c '
+          sudo chroot bundle/rootfs /bin/sh -c "
             mkdir -p \
               /usr/local/lib/node_modules \
               /usr/lib/node_modules \
@@ -209,7 +211,7 @@ EOF
               /run/avahi-daemon \
               /var/run/avahi-daemon
 
-            echo "homebridge" > /etc/hostname
+            echo \"homebridge\" > /etc/hostname
 
             cat > /etc/hosts <<EOF
 127.0.0.1 localhost
@@ -218,6 +220,7 @@ EOF
 
             cat > /etc/sudoers.d/homebridge <<EOF
 root ALL=(ALL) NOPASSWD: ALL
+homebridge ALL=(ALL) NOPASSWD: ALL
 EOF
             chmod 440 /etc/sudoers.d/homebridge
 
@@ -225,26 +228,26 @@ EOF
 
             cat > /etc/homebridge/default-config.json <<EOF
 {
-  "bridge": {
-    "name": "Homebridge",
-    "username": "0E:00:00:00:00:00",
-    "port": 51826,
-    "pin": "031-45-154"
+  \"bridge\": {
+    \"name\": \"Homebridge\",
+    \"username\": \"0E:00:00:00:00:00\",
+    \"port\": 51826,
+    \"pin\": \"031-45-154\"
   },
-  "plugins": [],
-  "platforms": [
+  \"plugins\": [],
+  \"platforms\": [
     {
-      "platform": "config",
-      "name": "Config",
-      "port": 8581,
-      "auth": "form",
-      "sudo": true
+      \"platform\": \"config\",
+      \"name\": \"Config\",
+      \"port\": 8581,
+      \"auth\": \"form\",
+      \"sudo\": true
     }
   ]
 }
 EOF
 
-            cat > /etc/homebridge/start.sh <<"EOF"
+            cat > /etc/homebridge/start.sh <<\"EOF\"
 #!/bin/sh
 set -e
 
@@ -262,11 +265,11 @@ mkdir -p \
 
 touch /homebridge/logs/homebridge.log
 
-TARGET_UID="${HB_UID:-0}"
-TARGET_GID="${HB_GID:-0}"
+TARGET_UID=\"\${HB_UID:-0}\"
+TARGET_GID=\"\${HB_GID:-0}\"
 
-if [ "$(id -u)" = "0" ] && [ -f /homebridge/config.json ]; then
-    chown "${TARGET_UID}:${TARGET_GID}" /homebridge/config.json 2>/dev/null || true
+if [ \"\$(id -u)\" = \"0\" ] && [ -f /homebridge/config.json ]; then
+    chown \"\${TARGET_UID}:\${TARGET_GID}\" /homebridge/config.json 2>/dev/null || true
 fi
 
 chmod 775 \
@@ -279,13 +282,13 @@ chmod 775 \
 chmod 644 /homebridge/logs/homebridge.log
 
 if [ ! -f /homebridge/.initialized ]; then
-    echo "Initializing default config.json for Config UI X..."
+    echo \"Initializing default config.json for Config UI X...\"
     if [ ! -f /homebridge/config.json ]; then
         cp /etc/homebridge/default-config.json /homebridge/config.json
     fi
     chmod 600 /homebridge/config.json
-    if [ "$(id -u)" = "0" ]; then
-        chown "${TARGET_UID}:${TARGET_GID}" /homebridge/config.json 2>/dev/null || true
+    if [ \"\$(id -u)\" = \"0\" ]; then
+        chown \"\${TARGET_UID}:\${TARGET_GID}\" /homebridge/config.json 2>/dev/null || true
     fi
     touch /homebridge/.initialized
 fi
@@ -303,11 +306,11 @@ fi
 export NODE_PATH=/usr/local/lib/node_modules
 export HOME=/homebridge
 
-exec "$@"
+exec \"\$@\"
 EOF
             chmod +x /etc/homebridge/start.sh
             /bin/sh -n /etc/homebridge/start.sh
-          '
+          "
 
       - name: Purge Heavy Build Dependencies & Clean Cache
         run: |
