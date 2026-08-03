@@ -39,6 +39,7 @@ jobs:
         run: |
           mkdir -p bundle
           umoci unpack \
+            --rootless \
             --image homebridge-oci:latest \
             bundle
 
