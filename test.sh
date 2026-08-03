@@ -181,14 +181,22 @@ apply_jq() {
     mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
 }
 
-# Split 1: Dynamic Mount Injection Target (/homebridge)
+# Split 0: Force compatible OCI version spec for OpenWrt UXC
+apply_jq "OCI Version Downgrade" \
+    '.ociVersion = "1.0.2"'
+
+echo "   ↳ OCI runtime spec downgraded to: 1.0.2 ✅"
+
+
+# Split 1: Clean and Set Persistent Host Bind Mount for /homebridge
 apply_jq "Mount Target Configuration" \
     --arg src "$PERSISTENT_DATA_SOURCE" \
-    'if (.mounts | map(select(.destination == "/homebridge")) | length) > 0 then
-       .mounts |= map(if .destination == "/homebridge" then .source = $src else . end)
-     else
-       .mounts += [{"destination": "/homebridge", "source": $src, "type": "bind", "options": ["rbind", "rw"]}]
-     end'
+    '.mounts |= (map(select(.destination != "/homebridge")) + [{
+      "destination": "/homebridge",
+      "type": "bind",
+      "source": $src,
+      "options": ["rbind", "rw"]
+    }])'
 
 echo "   ↳ Mount Target bound to: $PERSISTENT_DATA_SOURCE -> /homebridge ✅"
 
@@ -394,7 +402,7 @@ stop() {
 status() {
     if [ -x /sbin/uxc ]; then
         JSON=$(/sbin/uxc state "$CONTAINER_NAME" 2>/dev/null)
-        if [ -n -z "$JSON" ]; then
+        if [ -n "$JSON" ]; then
             echo "$JSON" | jq -r '.status'
             echo "$JSON" | jq -e '.status=="running"' >/dev/null 2>&1
             return $?
