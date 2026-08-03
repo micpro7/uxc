@@ -1,40 +1,48 @@
 {
-  "pkg": {
-    "name": "homebridge-arm64",
-    "version": "latest",
-    "description": "Native ARM64 Homebridge OCI bundle for OpenWrt UXC",
-    "arch": "aarch64"
+  "ociVersion": "1.0.2",
+  "process": {
+    "terminal": false,
+    "user": {
+      "uid": 1000,
+      "gid": 1000
+    },
+    "cwd": "/var/lib/homebridge",
+    "args": [
+      "/sbin/tini",
+      "--",
+      "/usr/local/bin/homebridge",
+      "-U",
+      "/var/lib/homebridge"
+    ],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "NODE_ENV=production",
+      "HOME=/var/lib/homebridge",
+      "USER=homebridge",
+      "TZ=Europe/London",
+      "LANG=C.UTF-8",
+      "LC_ALL=C.UTF-8",
+      "TERM=xterm-256color",
+      "MDNS_INTERFACE=br-lan",
+      "NODE_OPTIONS=--max-old-space-size=256",
+      "UV_THREADPOOL_SIZE=4",
+      "HOMEBRIDGE_IP=0.0.0.0",
+      "HOMEBRIDGE_CONFIG_UI_HOST=0.0.0.0"
+    ],
+    "noNewPrivileges": false
   },
-  "oci": {
-    "version": "1.0.2",
-    "rootfs": "rootfs",
-    "process": {
-      "terminal": false,
-      "user": {
-        "uid": 1000,
-        "gid": 1000
-      },
-      "cwd": "/var/lib/homebridge",
-      "args": [
-        "/sbin/tini",
-        "--",
-        "/usr/local/bin/homebridge",
-        "-U",
-        "/var/lib/homebridge"
-      ],
-      "env": [
-        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "NODE_ENV=production",
-        "HOME=/var/lib/homebridge",
-        "USER=homebridge",
-        "TZ=UTC",
-        "LANG=C.UTF-8",
-        "LC_ALL=C.UTF-8",
-        "TERM=xterm-256color",
-        "npm_config_update_notifier=false",
-        "npm_config_fund=false",
-        "npm_config_audit=false"
-      ]
-    }
+  "root": {
+    "path": "rootfs",
+    "readonly": false
+  },
+  "mounts": [],
+  "linux": {
+    "namespaces": [
+      { "type": "pid" },
+      { "type": "network" },
+      { "type": "ipc" },
+      { "type": "uts" },
+      { "type": "mount" }
+    ]
   }
 }
