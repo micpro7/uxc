@@ -101,15 +101,11 @@ jobs:
           sudo chroot bundle/rootfs /bin/sh -c '
             set -eu
 
-            # Enable both main and community repositories FIRST so npm can be resolved
-            cat << '\''EOF'\'' > /etc/apk/repositories
-            https://dl-cdn.alpinelinux.org/alpine/v'"${ALPINE_BRANCH}"'/main
-            https://dl-cdn.alpinelinux.org/alpine/v'"${ALPINE_BRANCH}"'/community
-            EOF
-
             apk update
 
             apk add --no-cache \
+              --repository=https://dl-cdn.alpinelinux.org/alpine/v'"${ALPINE_BRANCH}"'/main \
+              --repository=https://dl-cdn.alpinelinux.org/alpine/v'"${ALPINE_BRANCH}"'/community \
               coreutils \
               nodejs \
               npm \
