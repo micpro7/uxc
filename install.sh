@@ -181,16 +181,24 @@ apply_jq() {
     mv "$BUNDLE_PATH/config.json.tmp" "$BUNDLE_PATH/config.json"
 }
 
-# Split 1: Dynamic Mount Injection Target (/var/lib/homebridge)
+# Split 0: Force compatible OCI version spec for OpenWrt UXC
+apply_jq "OCI Version Downgrade" \
+    '.ociVersion = "1.0.2"'
+
+echo "   ↳ OCI runtime spec downgraded to: 1.0.2 ✅"
+
+
+# Split 1: Clean and Set Persistent Host Bind Mount for /homebridge
 apply_jq "Mount Target Configuration" \
     --arg src "$PERSISTENT_DATA_SOURCE" \
-    'if (.mounts | map(select(.destination == "/var/lib/homebridge")) | length) > 0 then
-       .mounts |= map(if .destination == "/var/lib/homebridge" then .source = $src else . end)
-     else
-       .mounts += [{"destination": "/var/lib/homebridge", "source": $src, "type": "bind", "options": ["rbind", "rw"]}]
-     end'
+    '.mounts |= (map(select(.destination != "/homebridge")) + [{
+      "destination": "/homebridge",
+      "type": "bind",
+      "source": $src,
+      "options": ["rbind", "rw"]
+    }])'
 
-echo "   ↳ Mount Target bound to: $PERSISTENT_DATA_SOURCE -> /var/lib/homebridge ✅"
+echo "   ↳ Mount Target bound to: $PERSISTENT_DATA_SOURCE -> /homebridge ✅"
 
 
 # Split 2: Update Timezone (TZ)
@@ -388,12 +396,6 @@ stop() {
 }
 
 # ==============================================================================
-# RESTART FUNCTION
-# rc.common maps restart to stop() then start() automatically.
-# FLOW (Combined): Grace/Force Stop -> Wait Mount -> Verify -> Kill -> Force Delete -> Recreate -> Start
-# ==============================================================================
-
-# ==============================================================================
 # STATUS FUNCTION
 # FLOW: Extract state metadata JSON -> Parse runtime status -> Output status string
 # ==============================================================================
@@ -401,10 +403,7 @@ status() {
     if [ -x /sbin/uxc ]; then
         JSON=$(/sbin/uxc state "$CONTAINER_NAME" 2>/dev/null)
         if [ -n "$JSON" ]; then
-            # Output status to stdout (e.g. "running" or "stopped")
             echo "$JSON" | jq -r '.status'
-            
-            # Return shell exit code (0 if running, 1 if stopped)
             echo "$JSON" | jq -e '.status=="running"' >/dev/null 2>&1
             return $?
         fi
