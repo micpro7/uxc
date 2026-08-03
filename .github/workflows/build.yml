@@ -151,19 +151,28 @@ jobs:
             chown 1000:1000 /home/homebridge
           '
 
-      - name: Install Official NodeSource ARM64 Binary
+      - name: Install Official Node.js ARM64 musl Binary
         run: |
           set -euo pipefail
-          echo "Downloading and installing official Node.js ARM64 binary..."
+          echo "Downloading official Node.js ARM64 musl binary..."
+
           sudo chroot bundle/rootfs /bin/sh -c '
             set -eu
+
             NODE_VERSION="v24.18.0"
             ARCH="arm64"
-            
-            curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${ARCH}.tar.xz"
-            tar -xf "node-${NODE_VERSION}-linux-${ARCH}.tar.xz" -C /usr/local --strip-components=1 --no-same-owner
-            rm -f "node-${NODE_VERSION}-linux-${ARCH}.tar.xz"
-            
+
+            curl -fsSLO \
+              "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${ARCH}-musl.tar.xz"
+
+            tar -xf \
+              "node-${NODE_VERSION}-linux-${ARCH}-musl.tar.xz" \
+              -C /usr/local \
+              --strip-components=1 \
+              --no-same-owner
+
+            rm -f node-${NODE_VERSION}-linux-${ARCH}-musl.tar.xz
+
             ln -sf /usr/local/bin/node /usr/bin/node
             ln -sf /usr/local/bin/npm /usr/bin/npm
             ln -sf /usr/local/bin/npx /usr/bin/npx
